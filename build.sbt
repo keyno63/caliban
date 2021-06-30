@@ -128,7 +128,8 @@ lazy val core = project
         "dev.zio"  %% "zio-test"     % zioVersion   % "test",
         "dev.zio"  %% "zio-test-sbt" % zioVersion   % "test",
         "io.circe" %% "circe-core"   % circeVersion % Optional,
-        "io.circe" %% "circe-parser" % circeVersion % Test
+        "io.circe" %% "circe-parser" % circeVersion % Test,
+        "io.spray" %% "spray-json"   % "1.3.6"      % Optional
       )
   )
   .dependsOn(macros)
@@ -274,6 +275,9 @@ lazy val akkaHttp = project
       "de.heikoseeberger"             %% "akka-http-circe"            % "1.36.0"   % Optional,
       "de.heikoseeberger"             %% "akka-http-play-json"        % "1.36.0"   % Optional,
       "de.heikoseeberger"             %% "akka-http-zio-json"         % "1.36.0"   % Optional,
+      // TODO: fix
+      //"io.spray" %%  "spray-json" % "1.3.6" % Optional,
+      "io.spray"                      %% "spray-json"                 % "1.3.6",
       "dev.zio"                       %% "zio-test"                   % zioVersion % "test",
       "dev.zio"                       %% "zio-test-sbt"               % zioVersion % "test",
       compilerPlugin(("org.typelevel" %% "kind-projector"             % "0.13.0").cross(CrossVersion.full))
@@ -384,8 +388,8 @@ lazy val examples = project
       "io.circe"                      %% "circe-generic"                 % circeVersion,
       "io.d11"                        %% "zhttp"                         % zioHttpVersion,
       "com.typesafe.play"             %% "play-akka-http-server"         % playVersion,
-      "com.typesafe.akka"             %% "akka-actor-typed"              % akkaVersion
-    )
+      "com.typesafe.akka"             %% "akka-actor-typed"              % akkaVersion,
+      "io.spray" %% "spray-json" % "1.3.6" % Optional    )
   )
   .dependsOn(
     akkaHttp,
@@ -479,3 +483,12 @@ val commonSettings = Def.settings(
     case _            => Nil
   })
 )
+
+lazy val `tmp-pj` = project
+  .in(file("./tmp-pj"))
+  .settings(
+    name := "tmp-pj",
+    libraryDependencies ++= Seq(
+      "io.spray" %% "spray-json" % "1.3.6" % Optional
+    )
+  )

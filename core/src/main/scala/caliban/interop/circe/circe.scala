@@ -99,8 +99,11 @@ object json {
       .instance[ResponseValue]({
         case value: Value                      => valueEncoder.apply(value)
         case ResponseValue.ListValue(values)   => Json.arr(values.map(responseValueEncoder.apply): _*)
-        case ResponseValue.ObjectValue(fields) =>
+        case ResponseValue.ObjectValue(fields) => {
+          val v = fields.map { case (k, v) => k -> responseValueEncoder.apply(v) }: _*
+
           Json.obj(fields.map { case (k, v) => k -> responseValueEncoder.apply(v) }: _*)
+        }
         case s: ResponseValue.StreamValue      => Json.fromString(s.toString)
       })
   }

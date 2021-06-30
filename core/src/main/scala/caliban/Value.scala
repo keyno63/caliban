@@ -2,6 +2,7 @@ package caliban
 
 import scala.util.Try
 import caliban.interop.circe._
+import spray.json._
 import zio.stream.Stream
 
 sealed trait InputValue
@@ -21,6 +22,14 @@ object InputValue extends ValueJsonCompat {
     caliban.interop.circe.json.ValueCirce.inputValueEncoder.asInstanceOf[F[InputValue]]
   implicit def circeDecoder[F[_]: IsCirceDecoder]: F[InputValue] =
     caliban.interop.circe.json.ValueCirce.inputValueDecoder.asInstanceOf[F[InputValue]]
+
+
+  implicit object sprayJsonInputFormat extends RootJsonFormat[InputValue] {
+    def write(obj: InputValue): JsValue =
+      caliban.interop.sprayjson.json.ValueSprayJson.write(obj)
+    def read(value: JsValue): InputValue =
+      caliban.interop.sprayjson.json.ValueSprayJson.read(value)
+  }
 }
 
 sealed trait ResponseValue

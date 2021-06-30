@@ -1,8 +1,9 @@
 package caliban
 
-import caliban.GraphQLRequest.{ `apollo-federation-include-trace`, ftv1 }
+import caliban.GraphQLRequest.{`apollo-federation-include-trace`, ftv1}
 import caliban.Value.StringValue
-import caliban.interop.circe.{ IsCirceDecoder, IsCirceEncoder }
+import caliban.interop.circe.{IsCirceDecoder, IsCirceEncoder}
+import spray.json._
 
 /**
  * Represents a GraphQL request, containing a query, an operation name and a map of variables.
@@ -27,6 +28,14 @@ object GraphQLRequest extends GraphQLRequestJsonCompat {
     caliban.interop.circe.json.GraphQLRequestCirce.graphQLRequestDecoder.asInstanceOf[F[GraphQLRequest]]
   implicit def circeEncoder[F[_]: IsCirceEncoder]: F[GraphQLRequest] =
     caliban.interop.circe.json.GraphQLRequestCirce.graphQLRequestEncoder.asInstanceOf[F[GraphQLRequest]]
+
+  implicit object sprayJsonFormat extends RootJsonFormat[GraphQLRequest] {
+    override def write(request: GraphQLRequest): JsValue =
+      caliban.interop.sprayjson.json.GraphQLRequestSprayJson.write(request)
+
+    override def read(value: JsValue): GraphQLRequest =
+      caliban.interop.sprayjson.json.GraphQLRequestSprayJson.read(value)
+  }
 
   private[caliban] val ftv1                              = "ftv1"
   private[caliban] val `apollo-federation-include-trace` = "apollo-federation-include-trace"
