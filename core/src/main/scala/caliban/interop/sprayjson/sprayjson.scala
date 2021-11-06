@@ -78,31 +78,31 @@ object json {
   }
 
   private[caliban] object GraphQLRequestSprayJson extends CalibanSprayJson[GraphQLRequest] {
-    override def write(request: GraphQLRequest): JsValue = JsObject(
-        Map(
-          "query" -> JsString(request.query.getOrElse("")),
-          "operationName" -> JsString(request.operationName.getOrElse("")),
-          "variables" -> request.variables.toJson,
-          "extensions" -> request.extensions.toJson
-        )
+  override def write(request: GraphQLRequest): JsValue = JsObject(
+      Map(
+        "query" -> JsString(request.query.getOrElse("")),
+        "operationName" -> JsString(request.operationName.getOrElse("")),
+        "variables" -> request.variables.toJson,
+        "extensions" -> request.extensions.toJson
       )
+    )
 
-    override def read(json: JsValue): GraphQLRequest =
-      json match {
-        case JsObject(m) => {
-          val query: Option[String] = m.get("query").map(_.convertTo[String])
-          val operationName: Option[String] = m.get("operationName").map(_.convertTo[String])
-          val variables: Option[Map[String, InputValue]] = m.get("variables").map(_.convertTo[Map[String, InputValue]])
-          val extensions: Option[Map[String, InputValue]] = m.get("extensions").map(_.convertTo[Map[String, InputValue]])
-          GraphQLRequest(
-            query = query,
-            operationName = operationName,
-            variables = variables,
-            extensions = extensions
-          )
-        }
-        case v @ _ => throw new Exception(s"failed to parse json value, value =[$v].")
+  override def read(json: JsValue): GraphQLRequest =
+    json match {
+      case JsObject(m) => {
+        val query: Option[String] = m.get("query").map(_.convertTo[String])
+        val operationName: Option[String] = m.get("operationName").map(_.convertTo[String])
+        val variables: Option[Map[String, InputValue]] = m.get("variables").map(_.convertTo[Map[String, InputValue]])
+        val extensions: Option[Map[String, InputValue]] = m.get("extensions").map(_.convertTo[Map[String, InputValue]])
+        GraphQLRequest(
+          query = query,
+          operationName = operationName,
+          variables = variables,
+          extensions = extensions
+        )
       }
+      case v @ _ => throw new Exception(s"failed to parse json value, value =[$v].")
+    }
   }
 
   private[caliban] object GraphQLResponseSprayJson {

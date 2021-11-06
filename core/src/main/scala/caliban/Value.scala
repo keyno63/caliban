@@ -23,7 +23,6 @@ object InputValue extends ValueJsonCompat {
   implicit def circeDecoder[F[_]: IsCirceDecoder]: F[InputValue] =
     caliban.interop.circe.json.ValueCirce.inputValueDecoder.asInstanceOf[F[InputValue]]
 
-
   implicit object sprayJsonInputFormat extends RootJsonFormat[InputValue] {
     def write(obj: InputValue): JsValue =
       caliban.interop.sprayjson.json.ValueSprayJson.write(obj)
