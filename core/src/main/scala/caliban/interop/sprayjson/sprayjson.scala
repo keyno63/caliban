@@ -52,6 +52,16 @@ object json {
           else if (v.isDecimalDouble) DoubleNumber(v.toDouble)
           else BigDecimalNumber(v)
         }
+      case JsString(v) => StringValue(v)
+      case JsTrue => BooleanValue(true)
+      case JsFalse => BooleanValue(false)
+      case JsArray(v) => ListValue(v.toList.map(read))
+      case JsObject(value) => ObjectValue(
+        value.map{
+          case (k,v) => (k, read(v))
+        }
+      )
+      case _ => NullValue
     }
   }
 
@@ -69,13 +79,13 @@ object json {
 
   private[caliban] object GraphQLRequestSprayJson extends CalibanSprayJson[GraphQLRequest] {
     override def write(request: GraphQLRequest): JsValue = JsObject(
-      Map(
-        "query" -> JsString(request.query.getOrElse("")),
-        "operationName" -> JsString(request.operationName.getOrElse("")),
-        "variables" -> request.variables.getOrElse(Map.empty).toJson,
-        "extensions" -> request.extensions.getOrElse(Map.empty[String, InputValue]).toJson
+        Map(
+          "query" -> JsString(request.query.getOrElse("")),
+          "operationName" -> JsString(request.operationName.getOrElse("")),
+          "variables" -> request.variables.toJson,
+          "extensions" -> request.extensions.toJson
+        )
       )
-    )
 
     override def read(json: JsValue): GraphQLRequest =
       json match {
