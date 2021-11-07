@@ -1,8 +1,8 @@
 package caliban
 
-import caliban.GraphQLRequest.{`apollo-federation-include-trace`, ftv1}
+import caliban.GraphQLRequest.{ `apollo-federation-include-trace`, ftv1 }
 import caliban.Value.StringValue
-import caliban.interop.circe.{IsCirceDecoder, IsCirceEncoder}
+import caliban.interop.circe.{ IsCirceDecoder, IsCirceEncoder }
 import spray.json._
 
 /**

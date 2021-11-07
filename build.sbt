@@ -389,7 +389,8 @@ lazy val examples = project
       "io.d11"                        %% "zhttp"                         % zioHttpVersion,
       "com.typesafe.play"             %% "play-akka-http-server"         % playVersion,
       "com.typesafe.akka"             %% "akka-actor-typed"              % akkaVersion,
-      "io.spray" %% "spray-json" % "1.3.6" % Optional    )
+      "io.spray"                      %% "spray-json"                    % "1.3.6" % Optional
+    )
   )
   .dependsOn(
     akkaHttp,

@@ -1,10 +1,10 @@
 package caliban.interop.sprayjson
 
-import caliban.{GraphQLRequest, Value}
-import spray.json.{JsObject, JsString, enrichAny}
+import caliban.{ GraphQLRequest, Value }
+import spray.json.{ enrichAny, JsObject, JsString }
 import zio.test.Assertion.equalTo
 import zio.test.environment.TestEnvironment
-import zio.test.{DefaultRunnableSpec, ZSpec, assert}
+import zio.test.{ assert, DefaultRunnableSpec, ZSpec }
 
 object GraphQLRequestSprayJsonSpec extends DefaultRunnableSpec {
 
@@ -13,13 +13,13 @@ object GraphQLRequestSprayJsonSpec extends DefaultRunnableSpec {
       test("can be parsed from JSON by sprayjson") {
         val request = JsObject(
           Map(
-            "query" -> JsString("{}"),
+            "query"         -> JsString("{}"),
             "operationName" -> JsString("op"),
-            "variables" -> JsObject.empty
+            "variables"     -> JsObject.empty
           )
         )
         assert(request.convertTo[GraphQLRequest])(
-            equalTo(GraphQLRequest(query = Some("{}"), operationName = Some("op"), variables = Some(Map.empty)))
+          equalTo(GraphQLRequest(query = Some("{}"), operationName = Some("op"), variables = Some(Map.empty)))
         )
       },
       test("can encode to JSON by sprayjson") {
@@ -40,6 +40,6 @@ object GraphQLRequestSprayJsonSpec extends DefaultRunnableSpec {
             """{"query":"{}","operationName":"op","variables":{"hello":"world","answer":42,"isAwesome":true,"name":null},"extensions":null}"""
           )
         )
-      },
+      }
     )
 }
