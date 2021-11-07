@@ -3,6 +3,7 @@ package caliban
 import caliban.ResponseValue.ObjectValue
 import caliban.interop.circe.{ IsCirceDecoder, IsCirceEncoder }
 import caliban.parsing.adt.LocationInfo
+import spray.json.{ JsValue, RootJsonFormat }
 
 /**
  * The base type for all Caliban errors.
@@ -58,4 +59,12 @@ object CalibanError extends CalibanErrorJsonCompat {
 
   implicit def circeDecoder[F[_]](implicit ev: IsCirceDecoder[F]): F[CalibanError] =
     caliban.interop.circe.json.ErrorCirce.errorValueDecoder.asInstanceOf[F[CalibanError]]
+
+  // TODO: move to scala2
+  implicit object sprayJsonFormat extends RootJsonFormat[CalibanError] {
+    override def write(ce: CalibanError): JsValue   =
+      caliban.interop.sprayjson.json.ErrorValueSprayJson.write(ce)
+    override def read(value: JsValue): CalibanError =
+      caliban.interop.sprayjson.json.ErrorValueSprayJson.read(value)
+  }
 }

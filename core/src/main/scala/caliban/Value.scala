@@ -24,7 +24,7 @@ object InputValue extends ValueJsonCompat {
     caliban.interop.circe.json.ValueCirce.inputValueDecoder.asInstanceOf[F[InputValue]]
 
   implicit object sprayJsonInputFormat extends RootJsonFormat[InputValue] {
-    def write(obj: InputValue): JsValue =
+    def write(obj: InputValue): JsValue  =
       caliban.interop.sprayjson.json.ValueSprayJson.write(obj)
     def read(value: JsValue): InputValue =
       caliban.interop.sprayjson.json.ValueSprayJson.read(value)
@@ -48,6 +48,13 @@ object ResponseValue extends ValueJsonCompat {
     caliban.interop.circe.json.ValueCirce.responseValueEncoder.asInstanceOf[F[ResponseValue]]
   implicit def circeDecoder[F[_]: IsCirceDecoder]: F[ResponseValue] =
     caliban.interop.circe.json.ValueCirce.responseValueDecoder.asInstanceOf[F[ResponseValue]]
+
+  implicit object sprayJsonInputFormat extends RootJsonFormat[ResponseValue] {
+    def write(obj: ResponseValue): JsValue  =
+      caliban.interop.sprayjson.json.ResponseValueSprayJson.write(obj)
+    def read(value: JsValue): ResponseValue =
+      caliban.interop.sprayjson.json.ResponseValueSprayJson.read(value)
+  }
 }
 
 sealed trait Value extends InputValue with ResponseValue
