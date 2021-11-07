@@ -2,12 +2,27 @@ version: 2.1
 jobs:
   lint:
     docker:
-      - image: circleci/openjdk:8-jdk-node
+      - image: cimg/openjdk:11.0-node
     steps:
       - checkout
       - restore_cache:
           key: sbtcache
-      - run: sbt ++2.12.13! check
+      - run: sbt ++2.13.6! check
+      - run: sbt ++3.0.2! check
+      - save_cache:
+          key: sbtcache
+          paths:
+            - "~/.ivy2/cache"
+            - "~/.sbt"
+            - "~/.m2"
+  test212_jdk:
+    docker:
+      - image: cimg/openjdk:11.0-node
+    steps:
+      - checkout
+      - restore_cache:
+          key: sbtcache
+      - run: sbt ++2.12.14! core/test http4s/test akkaHttp/test finch/compile play/test zioHttp/compile examples/compile catsInterop/compile benchmarks/compile tools/test codegenSbt/test clientJVM/test monixInterop/compile tapirInterop/test federation/test
       - save_cache:
           key: sbtcache
           paths:
@@ -16,40 +31,54 @@ jobs:
             - "~/.m2"
   test212_jdk8:
     docker:
-      - image: circleci/openjdk:8-jdk-node
+      - image: cimg/openjdk:8.0-node
     steps:
       - checkout
       - restore_cache:
           key: sbtcache
-      - run: sbt ++2.12.13! core/test http4s/compile akkaHttp/test finch/compile play/test zioHttp/compile examples/compile catsInterop/compile benchmarks/compile tools/test codegenSbt/test clientJVM/test monixInterop/compile tapirInterop/test federation/test codegenSbt/scripted
+      - run: sbt ++2.12.14! core/test http4s/test akkaHttp/test finch/compile play/test zioHttp/compile examples/compile catsInterop/compile benchmarks/compile tools/test codegenSbt/test clientJVM/test monixInterop/compile tapirInterop/test federation/test
       - save_cache:
           key: sbtcache
           paths:
             - "~/.ivy2/cache"
             - "~/.sbt"
             - "~/.m2"
-  test213_jdk11:
+  scripted212_jdk:
     docker:
-      - image: circleci/openjdk:11-jdk-node
+      - image: cimg/openjdk:11.0-node
     steps:
       - checkout
       - restore_cache:
           key: sbtcache
-      - run: sbt ++2.13.6! core/test http4s/compile akkaHttp/test finch/compile play/test zioHttp/compile examples/compile catsInterop/compile monixInterop/compile tapirInterop/test clientJVM/test federation/test
+      - run: sbt ++2.12.14! codegenSbt/scripted
       - save_cache:
           key: sbtcache
           paths:
             - "~/.ivy2/cache"
             - "~/.sbt"
             - "~/.m2"
-  test3_jdk11:
+  test213_jdk:
     docker:
-      - image: circleci/openjdk:11-jdk-node
+      - image: cimg/openjdk:11.0-node
     steps:
       - checkout
       - restore_cache:
           key: sbtcache
-      - run: sbt ++3.0.0! core/test catsInterop/compile monixInterop/compile clientJVM/test clientJS/compile zioHttp/compile
+      - run: sbt ++2.13.7! core/test http4s/test akkaHttp/test finch/compile play/test zioHttp/compile examples/compile catsInterop/compile monixInterop/compile tapirInterop/test clientJVM/test federation/test
+      - save_cache:
+          key: sbtcache
+          paths:
+            - "~/.ivy2/cache"
+            - "~/.sbt"
+            - "~/.m2"
+  test3_jdk:
+    docker:
+      - image: cimg/openjdk:11.0-node
+    steps:
+      - checkout
+      - restore_cache:
+          key: sbtcache
+      - run: sbt ++3.0.2! core/test catsInterop/compile monixInterop/compile clientJVM/test clientJS/compile zioHttp/compile tapirInterop/test http4s/test federation/test
       - save_cache:
           key: sbtcache
           paths:
@@ -58,12 +87,12 @@ jobs:
             - "~/.m2"
   test213_js:
     docker:
-      - image: circleci/openjdk:8-jdk-node
+      - image: cimg/openjdk:11.0-node
     steps:
       - checkout
       - restore_cache:
           key: sbtcache
-      - run: sbt ++2.13.6! clientJS/test clientLaminextJS/Test/fastLinkJS
+      - run: sbt ++2.13.7! clientJS/test clientLaminextJS/Test/fastLinkJS
       - save_cache:
           key: sbtcache
           paths:
@@ -72,7 +101,7 @@ jobs:
             - "~/.m2"
   release:
     docker:
-      - image: circleci/openjdk:8-jdk-node
+      - image: cimg/openjdk:11.0-node
     steps:
       - checkout
       - run: git fetch --tags
@@ -90,7 +119,7 @@ jobs:
 
   microsite:
     docker:
-      - image: circleci/node
+      - image: cimg/node:16.13
     steps:
       - checkout
       - run: |
@@ -116,7 +145,19 @@ workflows:
           filters:
             tags:
               only: /^v[0-9]+(\.[0-9]+)*$/
+      - test212_jdk:
+          requires:
+            - lint
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*$/
       - test212_jdk8:
+          requires:
+            - lint
+          filters:
+            tags:
+              only: /^v[0-9]+(\.[0-9]+)*$/
+      - scripted212_jdk:
           requires:
             - lint
           filters:
@@ -128,13 +169,13 @@ workflows:
           filters:
             tags:
               only: /^v[0-9]+(\.[0-9]+)*$/
-      - test213_jdk11:
+      - test213_jdk:
           requires:
             - lint
           filters:
             tags:
               only: /^v[0-9]+(\.[0-9]+)*$/
-      - test3_jdk11:
+      - test3_jdk:
           requires:
             - lint
           filters:
@@ -143,10 +184,12 @@ workflows:
       - release:
           context: Sonatype
           requires:
+            - test212_jdk
             - test212_jdk8
-            - test213_jdk11
+            - scripted212_jdk
+            - test213_jdk
             - test213_js
-            - test3_jdk11
+            - test3_jdk
           filters:
             branches:
               only:

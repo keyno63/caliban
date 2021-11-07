@@ -74,6 +74,28 @@ object ParserSpec extends DefaultRunnableSpec {
           )
         )
       },
+      testM("arguments with a backslash") {
+        val query = """{
+                      |  human(id: "1000\\") {
+                      |    name
+                      |  }
+                      |}""".stripMargin
+        assertM(Parser.parseQuery(query))(
+          equalTo(
+            simpleQuery(
+              selectionSet = List(
+                simpleField(
+                  "human",
+                  arguments = Map("id" -> StringValue("1000\\")),
+                  selectionSet = List(simpleField("name", index = 30)),
+                  index = 4
+                )
+              ),
+              sourceMapper = SourceMapper(query)
+            )
+          )
+        )
+      },
       testM("aliases") {
         val query = """{
                       |  empireHero: hero(episode: EMPIRE) {
@@ -302,7 +324,7 @@ object ParserSpec extends DefaultRunnableSpec {
         val query = """query inlineFragmentTyping {
                       |  profiles(handles: ["zuck", "cocacola"]) {
                       |    handle
-                      |    ... on User {
+                      |    ...on User {
                       |      friends {
                       |        count
                       |      }
@@ -328,13 +350,13 @@ object ParserSpec extends DefaultRunnableSpec {
                       Some(NamedType("User", nonNull = false)),
                       Nil,
                       List(
-                        simpleField("friends", selectionSet = List(simpleField("count", index = 126)), index = 108)
+                        simpleField("friends", selectionSet = List(simpleField("count", index = 125)), index = 107)
                       )
                     ),
                     InlineFragment(
                       Some(NamedType("Page", nonNull = false)),
                       Nil,
-                      List(simpleField("likers", selectionSet = List(simpleField("count", index = 187)), index = 170))
+                      List(simpleField("likers", selectionSet = List(simpleField("count", index = 186)), index = 169))
                     )
                   ),
                   index = 31

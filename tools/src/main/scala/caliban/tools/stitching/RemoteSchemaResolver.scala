@@ -1,25 +1,17 @@
 package caliban.tools.stitching
 
-import zio._
-import zio.query._
-
-import caliban.GraphQL
-import caliban.GraphQLResponse
+import caliban.CalibanError.ExecutionError
 import caliban.execution.Field
 import caliban.introspection.adt._
 import caliban.schema._
-import caliban.{ CalibanError, ResponseValue }
-import CalibanError.ExecutionError
+import caliban.{ CalibanError, GraphQL, ResponseValue }
+import zio._
+import zio.query._
 
 case class RemoteSchemaResolver(schema: __Schema, typeMap: Map[String, __Type]) {
   def remoteResolver[R, R0 <: Has[_], A](typeName: String)(
-    resolver: RemoteResolver[
-      R0,
-      CalibanError.ExecutionError,
-      ResolveRequest[A],
-      ResponseValue
-    ]
-  ) = new PartialRemoteSchema[R0, R, A] {
+    resolver: RemoteResolver[R0, CalibanError.ExecutionError, ResolveRequest[A], ResponseValue]
+  ): PartialRemoteSchema[R0, R, A] = new PartialRemoteSchema[R0, R, A] {
     def resolve(a: A, args: caliban.execution.Field): ZIO[R0, CalibanError, ResponseValue] =
       resolver.run(ResolveRequest(a, args))
 
@@ -34,27 +26,26 @@ case class RemoteSchemaResolver(schema: __Schema, typeMap: Map[String, __Type]) 
       rootType: Option[__Type],
       resolver: Option[RemoteResolver[R, ExecutionError, Field, ResponseValue]]
     ): Option[Operation[R]] =
-      (rootType zip resolver).headOption
-        .map({ case (rootType, resolver) =>
-          Operation[R](
-            rootType,
-            Step.ObjectStep(
-              rootType.name.getOrElse(""),
-              rootType
-                .fields(__DeprecatedArgs(Some(true)))
-                .getOrElse(List())
-                .map { field =>
-                  (field.name ->
-                    Step.MetadataFunctionStep((args: caliban.execution.Field) =>
-                      Step.QueryStep(
-                        ZQuery.fromEffect(resolver.run(args)).map(Step.PureStep)
-                      )
-                    ))
-                }
-                .toMap
-            )
+      (rootType zip resolver).headOption.map { case (rootType, resolver) =>
+        Operation[R](
+          rootType,
+          Step.ObjectStep(
+            rootType.name.getOrElse(""),
+            rootType
+              .fields(__DeprecatedArgs(Some(true)))
+              .getOrElse(List())
+              .map { field =>
+                field.name ->
+                  Step.MetadataFunctionStep((args: caliban.execution.Field) =>
+                    Step.QueryStep(
+                      ZQuery.fromEffect(resolver.run(args)).map(Step.PureStep)
+                    )
+                  )
+              }
+              .toMap
           )
-        })
+        )
+      }
 
     val builder = RootSchemaBuilder(
       query = toOperation(Option(schema.queryType), Option(resolver)),
@@ -74,7 +65,7 @@ object RemoteSchemaResolver {
   def fromSchema(schema: __Schema): RemoteSchemaResolver = {
     val typeMap = schema.types
       .collect({ t =>
-        (t.name) match {
+        t.name match {
           case Some(name) => name -> t
         }
       })

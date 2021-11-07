@@ -16,11 +16,11 @@ object RemoteSchema {
   def parseRemoteSchema(doc: Document): Option[__Schema] = {
     val queries = doc.schemaDefinition
       .flatMap(_.query)
-      .flatMap(doc.objectTypeDefinition(_))
+      .flatMap(doc.objectTypeDefinition)
 
     val mutations = doc.schemaDefinition
       .flatMap(_.mutation)
-      .flatMap(doc.objectTypeDefinition(_))
+      .flatMap(doc.objectTypeDefinition)
 
     queries
       .map(queries =>
@@ -44,7 +44,7 @@ object RemoteSchema {
       description = definition.description,
       interfaces = toInterfaces(definition.implements, definitions),
       directives = toDirectives(definition.directives),
-      fields = (args: __DeprecatedArgs) => {
+      fields = (args: __DeprecatedArgs) =>
         if (definition.fields.nonEmpty)
           Some(
             definition.fields
@@ -52,7 +52,6 @@ object RemoteSchema {
               .filter(filterDeprecated(_, args))
           )
         else None
-      }
     )
 
   private def toField(
@@ -147,11 +146,18 @@ object RemoteSchema {
   private def toInterfaceType(
     definition: Definition.TypeSystemDefinition.TypeDefinition.InterfaceTypeDefinition,
     definitions: List[Definition.TypeSystemDefinition.TypeDefinition]
-  ): __Type =
+  ): __Type = {
+    val implementations = definitions.collect {
+      case t @ ObjectTypeDefinition(description, name, implements, directives, fields)
+          if implements.map(_.name).toSet.contains(definition.name) =>
+        toObjectType(t, definitions)
+    }
+
     __Type(
       kind = __TypeKind.INTERFACE,
       name = Some(definition.name),
       description = definition.description,
+      possibleTypes = Some(implementations),
       fields = (args: __DeprecatedArgs) =>
         if (definition.fields.nonEmpty)
           Some(
@@ -162,6 +168,7 @@ object RemoteSchema {
         else None,
       directives = toDirectives(definition.directives)
     )
+  }
 
   private def toInputValue(
     definition: Definition.TypeSystemDefinition.TypeDefinition.InputValueDefinition,
@@ -171,7 +178,7 @@ object RemoteSchema {
       name = definition.name,
       description = definition.description,
       `type` = toType(definition.ofType, definitions),
-      defaultValue = definition.defaultValue.map(_.toString),
+      defaultValue = definition.defaultValue.map(_.toInputString),
       directives = toDirectives(definition.directives)
     )
 
@@ -183,7 +190,7 @@ object RemoteSchema {
       name = Some(definition.name),
       enumValues = (args: __DeprecatedArgs) =>
         if (definition.enumValuesDefinition.nonEmpty)
-          Some(definition.enumValuesDefinition.map(toEnumValue(_)).filter(filterDeprecated(_, args)))
+          Some(definition.enumValuesDefinition.map(toEnumValue).filter(filterDeprecated(_, args)))
         else None,
       directives = toDirectives(definition.directives)
     )
@@ -266,7 +273,7 @@ object RemoteSchema {
       name = definition.name,
       description = definition.description,
       args = definition.args.map(toInputValue(_, definitions)),
-      locations = definition.locations.map(toDirectiveLocation(_)).toSet
+      locations = definition.locations.map(toDirectiveLocation)
     )
 
   private def toDirectiveLocation(loc: DirectiveLocation): __DirectiveLocation =
@@ -305,7 +312,7 @@ object RemoteSchema {
 
   private def deprecationReason(directives: List[Directive]): Option[String] =
     directives.collectFirst {
-      case d if (d.name == "deprecated") =>
+      case d if d.name == "deprecated" =>
         d.arguments
           .get("reason")
           .collect { case StringValue(value) =>

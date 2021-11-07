@@ -5,14 +5,20 @@ import caliban.interop.circe._
 import spray.json._
 import zio.stream.Stream
 
-sealed trait InputValue
+sealed trait InputValue {
+  def toInputString: String = toString
+}
 object InputValue extends ValueJsonCompat {
   case class ListValue(values: List[InputValue])          extends InputValue {
-    override def toString: String = values.mkString("[", ",", "]")
+    override def toString: String      = values.mkString("[", ",", "]")
+    override def toInputString: String = values.map(_.toInputString).mkString("[", ", ", "]")
   }
   case class ObjectValue(fields: Map[String, InputValue]) extends InputValue {
     override def toString: String =
-      fields.map { case (name, value) => s""""$name":${value.toString}""" }.mkString("{", ",", "}")
+      fields.map { case (name, value) => s""""$name:${value.toString}"""" }.mkString("{", ",", "}")
+
+    override def toInputString: String =
+      fields.map { case (name, value) => s"""$name: ${value.toInputString}""" }.mkString("{", ", ", "}")
   }
   case class VariableValue(name: String)                  extends InputValue {
     override def toString: String = s"$$$name"
@@ -39,6 +45,13 @@ object ResponseValue extends ValueJsonCompat {
   case class ObjectValue(fields: List[(String, ResponseValue)])    extends ResponseValue {
     override def toString: String =
       fields.map { case (name, value) => s""""$name":${value.toString}""" }.mkString("{", ",", "}")
+
+    override def hashCode: Int               = fields.toSet.hashCode()
+    override def equals(other: Any): Boolean =
+      other match {
+        case o: ObjectValue => o.hashCode() == hashCode
+        case _              => false
+      }
   }
   case class StreamValue(stream: Stream[Throwable, ResponseValue]) extends ResponseValue {
     override def toString: String = "<stream>"
@@ -79,7 +92,8 @@ object Value {
     override def toString: String = if (value) "true" else "false"
   }
   case class EnumValue(value: String)     extends Value {
-    override def toString: String = s""""${value.replace("\"", "\\\"")}""""
+    override def toString: String      = s""""${value.replace("\"", "\\\"")}""""
+    override def toInputString: String = s"""${value.replace("\"", "\\\"")}"""
   }
 
   object IntValue {

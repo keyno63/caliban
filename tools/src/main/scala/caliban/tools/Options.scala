@@ -9,10 +9,15 @@ final case class Options(
   fmtPath: Option[String],
   headers: Option[List[Options.Header]],
   packageName: Option[String],
+  clientName: Option[String],
   genView: Option[Boolean],
   effect: Option[String],
   scalarMappings: Option[Map[String, String]],
-  imports: Option[List[String]]
+  imports: Option[List[String]],
+  abstractEffectType: Option[Boolean],
+  splitFiles: Option[Boolean],
+  enableFmt: Option[Boolean],
+  extensibleEnums: Option[Boolean]
 )
 
 object Options {
@@ -21,10 +26,15 @@ object Options {
     scalafmtPath: Option[String],
     headers: Option[List[String]],
     packageName: Option[String],
+    clientName: Option[String],
     genView: Option[Boolean],
     effect: Option[String],
     scalarMappings: Option[List[String]],
-    imports: Option[List[String]]
+    imports: Option[List[String]],
+    abstractEffectType: Option[Boolean],
+    splitFiles: Option[Boolean],
+    enableFmt: Option[Boolean],
+    extensibleEnums: Option[Boolean]
   )
 
   def fromArgs(args: List[String]): Option[Options] =
@@ -46,12 +56,13 @@ object Options {
             rawOpts.headers.map {
               _.flatMap { rawHeader =>
                 rawHeader.split(":").toList match {
-                  case name :: value :: Nil => Some(Header(name, value))
-                  case _                    => None
+                  case name :: values if values.nonEmpty => Some(Header(name, values.mkString(":")))
+                  case _                                 => None
                 }
               }
             },
             rawOpts.packageName,
+            rawOpts.clientName,
             rawOpts.genView,
             rawOpts.effect,
             rawOpts.scalarMappings.map {
@@ -62,7 +73,11 @@ object Options {
                 }
               }.toMap
             },
-            rawOpts.imports
+            rawOpts.imports,
+            rawOpts.abstractEffectType,
+            rawOpts.splitFiles,
+            rawOpts.enableFmt,
+            rawOpts.extensibleEnums
           )
         }
       case _                             => None

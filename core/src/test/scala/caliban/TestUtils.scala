@@ -30,7 +30,7 @@ object TestUtils {
     case object MARS  extends Origin
     case object BELT  extends Origin
     @GQLDeprecated("Use: EARTH | MARS | BELT")
-    case object MOON  extends Origin
+    case object MOON extends Origin
   }
 
   sealed trait Role
@@ -120,7 +120,7 @@ object TestUtils {
       args => characters.filter(c => args.origin.forall(c.origin == _)),
       args => characters.find(c => c.name == args.name),
       args => characters.filter(c => args.names.contains(c.name)),
-      args => characters.contains(args.character)
+      args => characters.exists(_.name == args.character.name)
     )
   )
   val resolverIO               = RootResolver(
@@ -348,7 +348,7 @@ object TestUtils {
       sealed trait FieldInterface {
         val a: String
       }
-      object FieldInterface       {
+      object FieldInterface {
         case class FieldObject(a: String, b: Int) extends FieldInterface
       }
       case class TestFieldObject(fieldInterface: FieldObject)
@@ -513,7 +513,7 @@ object TestUtils {
     case class TestWrongFieldArgDirectiveName(
       field: WrongDirectiveName => UIO[Unit]
     )
-    val resolverWrongFieldArgDirectiveName = RootResolver(
+    val resolverWrongFieldArgDirectiveName   = RootResolver(
       TestWrongFieldArgDirectiveName(_ => UIO.unit)
     )
 

@@ -1,9 +1,8 @@
 package caliban.schema
 
 import java.util.UUID
-
 import caliban.introspection.adt.{ __DeprecatedArgs, __Type, __TypeKind }
-import caliban.schema.Annotations.GQLInterface
+import caliban.schema.Annotations.{ GQLInterface, GQLUnion, GQLValueType }
 import zio.blocking.Blocking
 import zio.console.Console
 import zio.query.ZQuery
@@ -88,6 +87,16 @@ object SchemaSpec extends DefaultRunnableSpec {
           equalTo(List("common"))
         )
       },
+      test("enum-like sealed traits annotated with GQLUnion") {
+        assert(introspect[EnumLikeUnion])(
+          hasField[__Type, __TypeKind]("kind", _.kind, equalTo(__TypeKind.UNION))
+        )
+      },
+      test("enum-like sealed traits annotated with GQLInterface") {
+        assert(introspect[EnumLikeInterface])(
+          hasField[__Type, __TypeKind]("kind", _.kind, equalTo(__TypeKind.INTERFACE))
+        )
+      },
       test("field with Json object [circe]") {
         import caliban.interop.circe.json._
         case class Queries(to: io.circe.Json, from: io.circe.Json => Unit)
@@ -117,6 +126,42 @@ object SchemaSpec extends DefaultRunnableSpec {
         implicit val somethingSchema: Schema[Any, Something] = Schema.gen[Something].rename("SomethingElse")
 
         assert(Types.innerType(introspectSubscription[Something]).name)(isSome(equalTo("SomethingElse")))
+      },
+      test("union redirect") {
+        case class Queries(union: RedirectingUnion)
+
+        implicit val queriesSchema: Schema[Any, Queries] = Schema.gen[Queries]
+
+        val types      = Types.collectTypes(introspect[Queries])
+        val subTypes   = types.find(_.name.contains("RedirectingUnion")).flatMap(_.possibleTypes)
+        val fieldNames =
+          subTypes.toList.flatMap(_.flatMap(_.fields(__DeprecatedArgs()).map(_.map(_.name)))).toSet.flatten
+        assert(subTypes.map(_.flatMap(_.name)))(
+          isSome(
+            hasSameElements(
+              List("A", "B")
+            )
+          )
+        ) &&
+        assert(fieldNames)(hasSameElements(List("common")))
+      },
+      test("value type not scalar") {
+        @GQLValueType
+        case class Wrapper(value: Int)
+        case class Queries(test: Option[Wrapper])
+
+        assert(introspect[Queries].fields(__DeprecatedArgs()).toList.flatten.headOption.map(_.`type`()))(
+          isSome(hasField[__Type, Option[String]]("name", _.name, equalTo(Some("Int"))))
+        )
+      },
+      test("value type scalar") {
+        @GQLValueType(isScalar = true)
+        case class Wrapper(value: Int)
+        case class Queries(test: Option[Wrapper])
+
+        assert(introspect[Queries].fields(__DeprecatedArgs()).toList.flatten.headOption.map(_.`type`()))(
+          isSome(hasField[__Type, Option[String]]("name", _.name, equalTo(Some("Wrapper"))))
+        )
       }
     )
 
@@ -127,9 +172,35 @@ object SchemaSpec extends DefaultRunnableSpec {
 
   @GQLInterface
   sealed trait MyInterface
-  object MyInterface {
+  object MyInterface   {
     case class A(common: Int, different: String)  extends MyInterface
     case class B(common: Int, different: Boolean) extends MyInterface
+  }
+
+  @GQLUnion
+  sealed trait EnumLikeUnion
+  object EnumLikeUnion {
+    case object A extends EnumLikeUnion
+    case object B extends EnumLikeUnion
+  }
+
+  @GQLUnion
+  sealed trait RedirectingUnion
+
+  object RedirectingUnion  {
+    case class B(common: Int)
+
+    case class A(common: Int) extends RedirectingUnion
+
+    @GQLValueType
+    case class Redirect(value: B) extends RedirectingUnion
+  }
+
+  @GQLInterface
+  sealed trait EnumLikeInterface
+  object EnumLikeInterface {
+    case object A extends EnumLikeInterface
+    case object B extends EnumLikeInterface
   }
 
   def introspect[Q](implicit schema: Schema[Any, Q]): __Type             = schema.toType_()

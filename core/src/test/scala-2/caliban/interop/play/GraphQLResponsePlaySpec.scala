@@ -1,15 +1,14 @@
 package caliban.interop.play
 
 import caliban.CalibanError.ExecutionError
-import caliban.GraphQLResponse
-import caliban.ResponseValue.ObjectValue
+import caliban.ResponseValue.{ ListValue, ObjectValue }
+import caliban.{ CalibanError, GraphQLResponse, Value }
 import caliban.Value.StringValue
+import caliban.parsing.adt.LocationInfo
+import play.api.libs.json._
 import zio.test.Assertion._
 import zio.test._
 import zio.test.environment.TestEnvironment
-import play.api.libs.json._
-import caliban.Value
-import caliban.CalibanError
 
 object GraphQLResponsePlaySpec extends DefaultRunnableSpec {
 
@@ -34,6 +33,7 @@ object GraphQLResponsePlaySpec extends DefaultRunnableSpec {
           List(
             ExecutionError(
               "Resolution failed",
+              locationInfo = Some(LocationInfo(1, 2)),
               extensions = Some(ObjectValue(errorExtensions))
             )
           )
@@ -46,6 +46,7 @@ object GraphQLResponsePlaySpec extends DefaultRunnableSpec {
               "errors" -> Json.arr(
                 Json.obj(
                   "message"    -> JsString("Resolution failed"),
+                  "locations"  -> Json.arr(Json.obj("column" -> JsNumber(1), "line" -> JsNumber(2))),
                   "extensions" -> Json.obj("errorCode" -> JsString("TEST_ERROR"), "myCustomKey" -> JsString("my-value"))
                 )
               )
@@ -68,14 +69,50 @@ object GraphQLResponsePlaySpec extends DefaultRunnableSpec {
         )
       },
       test("reads a graphql response [play]") {
-        val req = """{"data":{"value": 42},"errors":[{"message":"boom"}]}"""
+        val req =
+          """
+            |{
+            |   "data":{"value": 42},
+            |   "errors":[
+            |     {
+            |       "message":"boom",
+            |       "path": ["step", 0],
+            |       "locations": [{"column": 1, "line": 2}],
+            |       "extensions": {
+            |         "argumentName": "id",
+            |         "code": "BAD_USER_INPUT",
+            |         "exception": {
+            |           "stacktrace": [
+            |              "trace"
+            |           ]
+            |         }
+            |       }
+            |     }]
+            |}""".stripMargin
 
         assert(Json.parse(req).validate[GraphQLResponse[CalibanError]].asEither)(
           isRight(
             equalTo(
               GraphQLResponse(
                 data = ObjectValue(List("value" -> Value.IntValue("42"))),
-                errors = List(ExecutionError("boom"))
+                errors = List(
+                  ExecutionError(
+                    "boom",
+                    path = List(Left("step"), Right(0)),
+                    locationInfo = Some(LocationInfo(1, 2)),
+                    extensions = Some(
+                      ObjectValue(
+                        List(
+                          "argumentName" -> StringValue("id"),
+                          "code"         -> StringValue("BAD_USER_INPUT"),
+                          "exception"    -> ObjectValue(
+                            List("stacktrace" -> ListValue(List(StringValue("trace"))))
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
               )
             )
           )

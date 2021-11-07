@@ -3,6 +3,8 @@ package caliban.schema
 import caliban.CalibanError.ExecutionError
 import caliban.InputValue
 import caliban.Value._
+import caliban.parsing.Parser
+import caliban.schema.Annotations.GQLDefault
 import caliban.schema.Annotations.GQLName
 import magnolia._
 import mercator.Monadic
@@ -26,18 +28,18 @@ trait ArgBuilderDerivation {
   }
 
   def combine[T](ctx: CaseClass[ArgBuilder, T]): ArgBuilder[T] =
-    (input: InputValue) => {
+    (input: InputValue) =>
       ctx.constructMonadic { p =>
         input match {
           case InputValue.ObjectValue(fields) =>
-            val label = p.annotations.collectFirst { case GQLName(name) => name }.getOrElse(p.label)
-            p.typeclass.build(fields.getOrElse(label, NullValue))
+            val label   = p.annotations.collectFirst { case GQLName(name) => name }.getOrElse(p.label)
+            val default = p.annotations.collectFirst { case GQLDefault(v) => v }
+            fields.get(label).fold(p.typeclass.buildMissing(default))(p.typeclass.build)
           case value                          => p.typeclass.build(value)
         }
       }
-    }
 
-  def dispatch[T](ctx: SealedTrait[ArgBuilder, T]): ArgBuilder[T] = input => {
+  def dispatch[T](ctx: SealedTrait[ArgBuilder, T]): ArgBuilder[T] = input =>
     (input match {
       case EnumValue(value)   => Some(value)
       case StringValue(value) => Some(value)
@@ -53,7 +55,6 @@ trait ArgBuilderDerivation {
         }
       case None        => Left(ExecutionError(s"Can't build a trait from input $input"))
     }
-  }
 
   implicit def gen[T]: Typeclass[T] = macro Magnolia.gen[T]
 }

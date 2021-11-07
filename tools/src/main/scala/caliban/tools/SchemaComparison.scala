@@ -86,7 +86,7 @@ object SchemaComparison {
     val deleted      = (leftKeys -- rightKeys).map(DirectiveArgumentDeleted(left.name, _, target)).toList
     val commonFields = leftKeys intersect rightKeys
     val changes      = commonFields.toList.flatMap(key =>
-      if (left == right) Nil
+      if (left.name == right.name && left.arguments == right.arguments) Nil
       else List(DirectiveArgumentChanged(left.name, key, left.arguments(key), right.arguments(key), target))
     )
 
@@ -276,9 +276,9 @@ object SchemaComparison {
     val argChanges         =
       compareArguments(left.args.map(a => a.name -> a).toMap, right.args.map(a => a.name -> a).toMap, target)
 
-    val locationAdded      =
+    val locationAdded   =
       (right.locations -- left.locations).map(l => DirectiveLocationAdded(l, left.name)).toList
-    val locationDeleted    =
+    val locationDeleted =
       (left.locations -- right.locations).map(l => DirectiveLocationDeleted(l, left.name)).toList
 
     descriptionChanges ++ argChanges ++ locationAdded ++ locationDeleted

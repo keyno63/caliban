@@ -1,13 +1,17 @@
 package caliban.schema
 
-import java.time.{ Instant, LocalDate, LocalDateTime, OffsetDateTime, OffsetTime, ZoneOffset, ZonedDateTime }
-
-import caliban.Value.{ IntValue, StringValue }
+import caliban.CalibanError.ExecutionError
+import caliban.InputValue
+import caliban.InputValue.ObjectValue
+import caliban.Value.{ IntValue, NullValue, StringValue }
+import zio.test.Assertion._
 import zio.test._
-import Assertion._
+import zio.test.environment.TestEnvironment
+
+import java.time._
 
 object ArgBuilderSpec extends DefaultRunnableSpec {
-  def spec = suite("ArgBuilder")(
+  def spec: ZSpec[TestEnvironment, Any] = suite("ArgBuilder")(
     suite("orElse")(
       test("handles failures")(
         assert((ArgBuilder.instant orElse ArgBuilder.instantEpoch).build(IntValue.LongNumber(100)))(
@@ -56,6 +60,33 @@ object ArgBuilderSpec extends DefaultRunnableSpec {
           isRight(equalTo(ZonedDateTime.ofInstant(Instant.ofEpochMilli(100), ZoneOffset.UTC)))
         )
       )
+    ),
+    suite("buildMissing")(
+      test("works with derived case class ArgBuilders") {
+        sealed abstract class Nullable[+T]
+        case class SomeNullable[+T](t: T) extends Nullable[T]
+        case object NullNullable          extends Nullable[Nothing]
+        case object MissingNullable       extends Nullable[Nothing]
+
+        implicit def nullableArgBuilder[A](implicit ev: ArgBuilder[A]): ArgBuilder[Nullable[A]] =
+          new ArgBuilder[Nullable[A]] {
+            def build(input: InputValue): Either[ExecutionError, Nullable[A]] = input match {
+              case NullValue => Right(NullNullable)
+              case _         => ev.build(input).map(SomeNullable(_))
+            }
+
+            override def buildMissing(default: Option[String]): Either[ExecutionError, Nullable[A]] =
+              Right(MissingNullable)
+          }
+
+        case class Wrapper(a: Nullable[String])
+
+        val derivedAB = implicitly[ArgBuilder[Wrapper]]
+
+        assert(derivedAB.build(ObjectValue(Map())))(equalTo(Right(Wrapper(MissingNullable)))) &&
+        assert(derivedAB.build(ObjectValue(Map("a" -> NullValue))))(equalTo(Right(Wrapper(NullNullable)))) &&
+        assert(derivedAB.build(ObjectValue(Map("a" -> StringValue("x")))))(equalTo(Right(Wrapper(SomeNullable("x")))))
+      }
     )
   )
 }

@@ -11,7 +11,7 @@ You should also be careful when using stitching since it's very easy to pull in 
 In order to use stitching, add `caliban-tools` to your dependencies:
 
 ```scala
-libraryDependencies += "com.github.ghostdogpr" %% "caliban-tools" % "<not yet released, use snapshot>"
+libraryDependencies += "com.github.ghostdogpr" %% "caliban-tools" % "1.2.2"
 ```
 
 ## Stitching in Action
@@ -35,7 +35,7 @@ object StitchingExample extends GenericSchema[ZEnv] {
         GetUser = query =>
           random.nextUUID.map(uuid =>
             AppUser(
-              id = uuid.toString(),
+              id = uuid.toString,
               name = query.name,
               featuredRepository = Repository(query.name, query.repository)
           )

@@ -17,6 +17,7 @@ import caliban.parsing.adt._
 import cats.parse.{ Numbers, Parser => P }
 import cats.parse._
 import zio.{ IO, Task }
+import scala.util.Try
 
 object Parser {
   private final val UnicodeBOM                           = '\uFEFF'
@@ -93,7 +94,7 @@ object Parser {
     }
 
     def unescape(str: String): Either[Int, String] = {
-      val sb                  = new java.lang.StringBuilder
+      val sb                                             = new java.lang.StringBuilder
       def decodeNum(idx: Int, size: Int, base: Int): Int = {
         val end = idx + size
         if (end <= str.length) {
@@ -239,7 +240,7 @@ object Parser {
   private val listType: P[ListType] =
     (wrapSquareBrackets(type_) ~ P.char('!').?).map { case (typ, nonNull) => ListType(typ, nonNull = nonNull.nonEmpty) }
 
-  private lazy val type_ : P[Type]  = P.defer(P.oneOf(namedType :: listType :: Nil))
+  private lazy val type_ : P[Type] = P.defer(P.oneOf(namedType :: listType :: Nil))
 
   private val argumentDefinition: P[InputValueDefinition]        =
     (((stringValue <* whitespaceWithComment1).?.with1 ~ name <* wrapWhitespaces(P.char(':'))) ~
@@ -285,8 +286,9 @@ object Parser {
   private val fragmentName: P[String] = name.filter(_ != "on")
 
   private val fragmentSpread: P[FragmentSpread] =
-    ((P.string("...").soft *> fragmentName <* whitespaceWithComment) ~ directives.?).map { case (name, dirs) =>
-      FragmentSpread(name, dirs.getOrElse(Nil))
+    ((P.string("...").soft *> fragmentName <* whitespaceWithComment).backtrack ~ directives.?).map {
+      case (name, dirs) =>
+        FragmentSpread(name, dirs.getOrElse(Nil))
     }
 
   private val typeCondition: P[NamedType] = P.string("on") *> whitespaceWithComment1 *> namedType
@@ -581,6 +583,23 @@ object Parser {
           )
         case Right(result) =>
           IO.succeed(Document(result._2.definitions, sm))
+      }
+  }
+
+  def parseInputValue(rawValue: String): Either[ParsingError, InputValue] = {
+    val sm = SourceMapper(rawValue)
+    Try(value.parse(rawValue)).toEither.left
+      .map(ex => ParsingError(s"Internal parsing error", innerThrowable = Some(ex)))
+      .flatMap {
+        case Left(error) =>
+          Left(
+            ParsingError(
+              s"Parsing error at offset ${error.failedAtOffset}, expected: ${error.expected.toList.mkString(";")}",
+              Some(sm.getLocation(error.failedAtOffset))
+            )
+          )
+
+        case Right(_, result) => Right(result)
       }
   }
 

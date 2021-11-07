@@ -3,6 +3,8 @@ package caliban.schema
 import caliban.CalibanError.ExecutionError
 import caliban.InputValue
 import caliban.Value._
+import caliban.parsing.Parser
+import caliban.uploads.Upload
 import zio.Chunk
 
 import java.time.format.DateTimeFormatter
@@ -32,6 +34,18 @@ trait ArgBuilder[T] { self =>
    * Fails with an [[caliban.CalibanError.ExecutionError]] if it was impossible to build the value.
    */
   def build(input: InputValue): Either[ExecutionError, T]
+
+  /**
+   * Builds a value of type `T` from a missing input value.
+   * By default, this delegates to [[build]], passing it NullValue.
+   * Fails with an [[caliban.CalibanError.ExecutionError]] if it was impossible to build the value.
+   */
+  def buildMissing(default: Option[String]): Either[ExecutionError, T] =
+    default
+      .map(
+        Parser.parseInputValue(_).flatMap(build(_)).left.map(e => ExecutionError(e.getMessage()))
+      )
+      .getOrElse(build(NullValue))
 
   /**
    * Builds a new `ArgBuilder` of `A` from an existing `ArgBuilder` of `T` and a function from `T` to `A`.
@@ -180,4 +194,9 @@ object ArgBuilder extends ArgBuilderDerivation {
   implicit def set[A](implicit ev: ArgBuilder[A]): ArgBuilder[Set[A]]       = list[A].map(_.toSet)
   implicit def vector[A](implicit ev: ArgBuilder[A]): ArgBuilder[Vector[A]] = list[A].map(_.toVector)
   implicit def chunk[A](implicit ev: ArgBuilder[A]): ArgBuilder[Chunk[A]]   = list[A].map(Chunk.fromIterable)
+
+  implicit lazy val upload: ArgBuilder[Upload] = {
+    case StringValue(v) => Right(Upload(v))
+    case other          => Left(ExecutionError(s"Can't build an Upload from $other"))
+  }
 }

@@ -33,7 +33,24 @@ object Annotations {
   case class GQLDirective(directive: Directive) extends StaticAnnotation
 
   /**
-   * Annotation to make a sealed trait an interface instead of a union type
+   * Annotation to make a sealed trait an interface instead of a union type or an enum
    */
   case class GQLInterface() extends StaticAnnotation
+
+  /**
+   * Annotation to make a sealed trait a union instead of an enum
+   */
+  case class GQLUnion() extends StaticAnnotation
+
+  /**
+   * Annotation to make a case class redirect to its inner type.
+   * The `Schema` of the inner type will be used, unless `isScalar` is true in which case
+   * a scalar with the name of the parent case class will be created.
+   */
+  case class GQLValueType(isScalar: Boolean = false) extends StaticAnnotation
+
+  /**
+   * Annotation to specify the default value of an input field
+   */
+  case class GQLDefault(value: String) extends StaticAnnotation
 }

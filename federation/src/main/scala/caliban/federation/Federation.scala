@@ -6,7 +6,7 @@ import caliban.introspection.adt._
 import caliban.parsing.adt.Directive
 import caliban.schema.Step.QueryStep
 import caliban.schema._
-import caliban.{ CalibanError, GraphQL, InputValue, RootResolver }
+import caliban.{ CalibanError, GraphQL, GraphQLAspect, InputValue, RootResolver }
 import zio.query.ZQuery
 
 trait Federation {
@@ -48,6 +48,18 @@ trait Federation {
     GraphQL.graphQL(RootResolver(Query(_service = _Service(original.render))), federationDirectives) |+| original
   }
 
+  def federated[R](resolver: EntityResolver[R], others: EntityResolver[R]*): GraphQLAspect[Nothing, R] =
+    new GraphQLAspect[Nothing, R] {
+      def apply[R1 <: R](original: GraphQL[R1]): GraphQL[R1] =
+        federate(original, resolver, others: _*)
+    }
+
+  lazy val federated: GraphQLAspect[Nothing, Any] =
+    new GraphQLAspect[Nothing, Any] {
+      def apply[R1](original: GraphQL[R1]): GraphQL[R1] =
+        federate(original)
+    }
+
   /**
    * Accepts a GraphQL as well as entity resolvers in order to support more advanced federation use cases. This variant
    * will allow the gateway to query for entities by resolver.
@@ -60,7 +72,7 @@ trait Federation {
     val resolvers = resolver +: otherResolvers.toList
 
     val genericSchema = new GenericSchema[R] {}
-    import genericSchema._
+    import genericSchema.{ gen, _ }
 
     implicit val entitySchema: Schema[R, _Entity] = new Schema[R, _Entity] {
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type =
@@ -178,7 +190,7 @@ object Federation {
     case InputValue.ObjectValue(fields) =>
       fields.get("representations").toRight(ExecutionError("_Any must contain a __typename value")).flatMap {
         case InputValue.ListValue(values) =>
-          traverseEither(values.map(anyArgBuilder.build)).map(RepresentationsArgs)
+          traverseEither(values.map(anyArgBuilder.build)).map(RepresentationsArgs.apply)
         case other                        => Left(ExecutionError(s"Can't build a representations from input $other"))
       }
     case other                          => Left(ExecutionError(s"Can't build a representations from input $other"))

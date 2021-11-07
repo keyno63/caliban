@@ -99,8 +99,7 @@ object json {
 
     private def jsonToResponseValue(json: JsValue): ResponseValue =
       json match {
-        case JsObject(fields)  =>
-          ResponseValue.ObjectValue(fields.map { case (k, v) => k -> jsonToResponseValue(v) }.toList)
+        case JsObject(fields)  => responseObjectValueFromFields(fields)
         case JsArray(elements) => ResponseValue.ListValue(elements.toList.map(jsonToResponseValue))
         case JsString(value)   => StringValue(value)
         case JsNumber(value)   =>
@@ -110,6 +109,17 @@ object json {
 
         case b: JsBoolean => BooleanValue(b.value)
         case JsNull       => NullValue
+      }
+
+    def responseObjectValueFromFields(fields: scala.collection.Map[String, JsValue]): ResponseValue.ObjectValue =
+      ResponseValue.ObjectValue(fields.map { case (k, v) =>
+        k -> jsonToResponseValue(v)
+      }.toList)
+
+    val responseObjectValueReads: Reads[ResponseValue.ObjectValue] =
+      Reads {
+        case JsObject(fields) => JsSuccess(responseObjectValueFromFields(fields))
+        case _                => JsError("not a json object")
       }
 
     val responseValueReads: Reads[ResponseValue] =
@@ -122,6 +132,10 @@ object json {
         JsObject(fields.map { case (k, v) => k -> responseValueWrites.writes(v) })
       case s: ResponseValue.StreamValue      => JsString(s.toString)
     }
+
+    val responseObjectValueWrites: Writes[ResponseValue.ObjectValue] = Writes { v =>
+      JsObject(v.fields.map { case (k, v) => k -> responseValueWrites.writes(v) })
+    }
   }
 
   private[caliban] object ErrorPlayJson {
@@ -129,28 +143,27 @@ object json {
 
     private final case class ErrorDTO(
       message: String,
-      extensions: Option[ResponseValue],
-      locations: Option[LocationInfo],
+      extensions: Option[ResponseValue.ObjectValue],
+      locations: Option[List[LocationInfo]],
       path: Option[JsArray]
     )
 
-    implicit val locationInfoWrites: Writes[LocationInfo] =
-      Json.writes[LocationInfo].transform((v: JsValue) => Json.arr(v))
-
-    private implicit val errorDTOWrites = Json.writes[ErrorDTO]
+    implicit val locationInfoWrites: Writes[LocationInfo]                     = Json.writes[LocationInfo]
+    implicit val responseObjectValueWrites: Writes[ResponseValue.ObjectValue] = ValuePlayJson.responseObjectValueWrites
+    private implicit val errorDTOWrites: Writes[ErrorDTO]                     = Json.writes[ErrorDTO]
 
     val errorValueWrites: Writes[CalibanError] = errorDTOWrites.contramap[CalibanError] {
       case CalibanError.ParsingError(msg, locationInfo, _, extensions) =>
-        ErrorDTO(s"Parsing Error: $msg", extensions, locationInfo, None)
+        ErrorDTO(s"Parsing Error: $msg", extensions, locationInfo.map(List(_)), None)
 
       case CalibanError.ValidationError(msg, _, locationInfo, extensions) =>
-        ErrorDTO(msg, extensions, locationInfo, None)
+        ErrorDTO(msg, extensions, locationInfo.map(List(_)), None)
 
       case CalibanError.ExecutionError(msg, path, locationInfo, _, extensions) =>
         ErrorDTO(
           msg,
           extensions,
-          locationInfo,
+          locationInfo.map(List(_)),
           Some(path).collect {
             case p if p.nonEmpty =>
               JsArray(p.map {
@@ -161,9 +174,11 @@ object json {
         )
     }
 
-    private implicit val locationInfoReads: Reads[LocationInfo] = Json.reads[LocationInfo]
-    private implicit val errorDTOReads: Reads[ErrorDTO]         = Json.reads[ErrorDTO]
-    val errorValueReads: Reads[CalibanError]                    = Json
+    private implicit val locationInfoReads: Reads[LocationInfo]                     = Json.reads[LocationInfo]
+    private implicit val responseObjectValueReads: Reads[ResponseValue.ObjectValue] =
+      ValuePlayJson.responseObjectValueReads
+    private implicit val errorDTOReads: Reads[ErrorDTO]                             = Json.reads[ErrorDTO]
+    val errorValueReads: Reads[CalibanError]                                        = Json
       .reads[ErrorDTO]
       .map(e =>
         CalibanError.ExecutionError(
@@ -172,14 +187,14 @@ object json {
             .getOrElse(JsArray())
             .value
             .toList
-            .map(el =>
-              el match {
-                case JsString(s)  => Left(s)
-                case JsNumber(bd) => Right(bd.toInt)
-                case _            => throw new Exception("invalid json")
-              }
-            ),
-          locationInfo = e.locations
+            .map {
+              case JsString(s)  => Left(s)
+              case JsNumber(bd) => Right(bd.toInt)
+              case _            => throw new Exception("invalid json")
+            },
+          locationInfo = e.locations.flatMap(_.headOption),
+          None,
+          e.extensions
         )
       )
   }
@@ -208,21 +223,21 @@ object json {
         case _                => Json.obj("message" -> err.toString)
       }
 
-    implicit val errorReads                                        = ErrorPlayJson.errorValueReads
+    implicit val errorReads: Reads[CalibanError]                   = ErrorPlayJson.errorValueReads
     val graphQLResponseReads: Reads[GraphQLResponse[CalibanError]] =
-      ((JsPath \ "data")
+      (JsPath \ "data")
         .read[ResponseValue]
         .and(
           (JsPath \ "errors")
             .read[List[CalibanError]]
         )
-        .tupled)
-        .map({ case (data, errors) =>
+        .tupled
+        .map { case (data, errors) =>
           GraphQLResponse[CalibanError](
             data = data,
             errors = errors
           )
-        })
+        }
   }
 
   private[caliban] object GraphQLRequestPlayJson {

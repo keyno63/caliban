@@ -8,6 +8,7 @@ import caliban.introspection.adt._
 import caliban.parsing.adt.Directive
 import caliban.schema.Step._
 import caliban.schema.Types._
+import caliban.uploads.Upload
 import caliban.{ InputValue, ResponseValue }
 import zio.query.ZQuery
 import zio.stream.ZStream
@@ -90,8 +91,8 @@ trait Schema[-R, T] { self =>
    * @param inputName new name for the type when it's an input type (by default "Input" is added after the name)
    */
   def rename(name: String, inputName: Option[String] = None): Schema[R, T] = new Schema[R, T] {
-    override def optional: Boolean             = self.optional
-    override def arguments: List[__InputValue] = self.arguments
+    override def optional: Boolean                                         = self.optional
+    override def arguments: List[__InputValue]                             = self.arguments
     override def toType(isInput: Boolean, isSubscription: Boolean): __Type = {
       val newName = if (isInput) inputName.getOrElse(Schema.customizeInputTypeName(name)) else name
       self.toType_(isInput, isSubscription).copy(name = Some(newName))
@@ -159,6 +160,11 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
         ObjectStep(name, fields(false, false).map { case (f, plan) => f.name -> plan(value) }.toMap)
     }
 
+  /**
+   * Manually defines a field from a name, a description, some directives and a resolver.
+   * If the field is a function that should be called lazily, use `fieldLazy` instead.
+   * If the field takes arguments, use `fieldWithArgs` instead.
+   */
   def field[V](
     name: String,
     description: Option[String] = None,
@@ -166,6 +172,19 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
   ): PartiallyAppliedField[V] =
     PartiallyAppliedField[V](name, description, directives)
 
+  /**
+   * Manually defines a lazy field from a name, a description, some directives and a resolver.
+   */
+  def fieldLazy[V](
+    name: String,
+    description: Option[String] = None,
+    directives: List[Directive] = List.empty
+  ): PartiallyAppliedFieldLazy[V] =
+    PartiallyAppliedFieldLazy[V](name, description, directives)
+
+  /**
+   * Manually defines a field with arguments from a name, a description, some directives and a resolver.
+   */
   def fieldWithArgs[V, A](
     name: String,
     description: Option[String] = None,
@@ -225,12 +244,14 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
   implicit val booleanSchema: Schema[Any, Boolean]       = scalarSchema("Boolean", None, BooleanValue.apply)
   implicit val stringSchema: Schema[Any, String]         = scalarSchema("String", None, StringValue.apply)
   implicit val uuidSchema: Schema[Any, UUID]             = scalarSchema("ID", None, uuid => StringValue(uuid.toString))
+  implicit val shortSchema: Schema[Any, Short]           = scalarSchema("Short", None, IntValue(_))
   implicit val intSchema: Schema[Any, Int]               = scalarSchema("Int", None, IntValue(_))
   implicit val longSchema: Schema[Any, Long]             = scalarSchema("Long", None, IntValue(_))
   implicit val bigIntSchema: Schema[Any, BigInt]         = scalarSchema("BigInt", None, IntValue(_))
   implicit val doubleSchema: Schema[Any, Double]         = scalarSchema("Float", None, FloatValue(_))
   implicit val floatSchema: Schema[Any, Float]           = scalarSchema("Float", None, FloatValue(_))
   implicit val bigDecimalSchema: Schema[Any, BigDecimal] = scalarSchema("BigDecimal", None, FloatValue(_))
+  implicit val uploadSchema: Schema[Any, Upload]         = scalarSchema("Upload", None, _ => StringValue("<upload>"))
 
   implicit def optionSchema[R0, A](implicit ev: Schema[R0, A]): Schema[R0, Option[A]]                                  = new Schema[R0, Option[A]] {
     override def optional: Boolean                                         = true
@@ -339,11 +360,11 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
     arg1: ArgBuilder[A],
     ev1: Schema[RA, A],
     ev2: Schema[RB, B]
-  ): Schema[RA with RB, A => B]                                                                                        =
+  ): Schema[RA with RB, A => B] =
     new Schema[RA with RB, A => B] {
-      private lazy val inputType                                             = ev1.toType_(true)
-      private val unwrappedArgumentName                                      = "value"
-      override def arguments: List[__InputValue]                             =
+      private lazy val inputType                 = ev1.toType_(true)
+      private val unwrappedArgumentName          = "value"
+      override def arguments: List[__InputValue] =
         inputType.inputFields.getOrElse(
           handleInput(List.empty[__InputValue])(
             List(
@@ -356,6 +377,7 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
             )
           )
         )
+
       override def optional: Boolean                                         = ev2.optional
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev2.toType_(isInput, isSubscription)
 
@@ -371,7 +393,7 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
             .fold(error => QueryStep(ZQuery.fail(error)), value => ev2.resolve(f(value)))
 
         }
-      private def handleInput[A](onWrapped: => A)(onUnwrapped: => A): A =
+      private def handleInput[T](onWrapped: => T)(onUnwrapped: => T): T =
         inputType.kind match {
           case __TypeKind.SCALAR | __TypeKind.ENUM | __TypeKind.LIST =>
             // argument was not wrapped in a case class
@@ -390,15 +412,25 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
     }
   implicit def effectSchema[R0, R1 >: R0, R2 >: R0, E <: Throwable, A](implicit
     ev: Schema[R2, A]
-  ): Schema[R0, ZIO[R1, E, A]]                                                                                        =
+  ): Schema[R0, ZIO[R1, E, A]] =
     new Schema[R0, ZIO[R1, E, A]] {
       override def optional: Boolean                                         = true
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev.toType_(isInput, isSubscription)
       override def resolve(value: ZIO[R1, E, A]): Step[R0]                   = QueryStep(ZQuery.fromEffect(value.map(ev.resolve)))
     }
+  def customErrorEffectSchema[R0, R1 >: R0, R2 >: R0, E, A](convertError: E => ExecutionError)(implicit
+    ev: Schema[R2, A]
+  ): Schema[R0, ZIO[R1, E, A]] =
+    new Schema[R0, ZIO[R1, E, A]] {
+      override def optional: Boolean                                         = true
+      override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev.toType_(isInput, isSubscription)
+      override def resolve(value: ZIO[R1, E, A]): Step[R0]                   = QueryStep(
+        ZQuery.fromEffect(value.mapBoth(convertError, ev.resolve))
+      )
+    }
   implicit def infallibleQuerySchema[R0, R1 >: R0, R2 >: R0, A](implicit
     ev: Schema[R2, A]
-  ): Schema[R0, ZQuery[R1, Nothing, A]]                                                                               =
+  ): Schema[R0, ZQuery[R1, Nothing, A]] =
     new Schema[R0, ZQuery[R1, Nothing, A]] {
       override def optional: Boolean                                         = ev.optional
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev.toType_(isInput, isSubscription)
@@ -406,35 +438,53 @@ trait GenericSchema[R] extends SchemaDerivation[R] with TemporalSchema {
     }
   implicit def querySchema[R0, R1 >: R0, R2 >: R0, E <: Throwable, A](implicit
     ev: Schema[R2, A]
-  ): Schema[R0, ZQuery[R1, E, A]]                                                                                     =
+  ): Schema[R0, ZQuery[R1, E, A]] =
     new Schema[R0, ZQuery[R1, E, A]] {
       override def optional: Boolean                                         = true
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev.toType_(isInput, isSubscription)
       override def resolve(value: ZQuery[R1, E, A]): Step[R0]                = QueryStep(value.map(ev.resolve))
     }
+  def customErrorQuerySchema[R0, R1 >: R0, R2 >: R0, E, A](convertError: E => ExecutionError)(implicit
+    ev: Schema[R2, A]
+  ): Schema[R0, ZQuery[R1, E, A]] =
+    new Schema[R0, ZQuery[R1, E, A]] {
+      override def optional: Boolean                                         = true
+      override def toType(isInput: Boolean, isSubscription: Boolean): __Type = ev.toType_(isInput, isSubscription)
+      override def resolve(value: ZQuery[R1, E, A]): Step[R0]                = QueryStep(value.bimap(convertError, ev.resolve))
+    }
   implicit def infallibleStreamSchema[R1, R2 >: R1, A](implicit
     ev: Schema[R2, A]
-  ): Schema[R1, ZStream[R1, Nothing, A]]                                                                              =
+  ): Schema[R1, ZStream[R1, Nothing, A]] =
     new Schema[R1, ZStream[R1, Nothing, A]] {
-      override def optional: Boolean                                 = false
+      override def optional: Boolean                                         = false
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = {
         val t = ev.toType_(isInput, isSubscription)
         if (isSubscription) t else makeList(if (ev.optional) t else makeNonNull(t))
       }
-      override def resolve(value: ZStream[R1, Nothing, A]): Step[R1] = StreamStep(value.map(ev.resolve))
+      override def resolve(value: ZStream[R1, Nothing, A]): Step[R1]         = StreamStep(value.map(ev.resolve))
     }
   implicit def streamSchema[R0, R1 >: R0, R2 >: R0, E <: Throwable, A](implicit
     ev: Schema[R2, A]
-  ): Schema[R0, ZStream[R1, E, A]]                                                                                    =
+  ): Schema[R0, ZStream[R1, E, A]] =
     new Schema[R0, ZStream[R1, E, A]] {
-      override def optional: Boolean                           = true
+      override def optional: Boolean                                         = true
       override def toType(isInput: Boolean, isSubscription: Boolean): __Type = {
         val t = ev.toType_(isInput, isSubscription)
         if (isSubscription) t else makeList(if (ev.optional) t else makeNonNull(t))
       }
-      override def resolve(value: ZStream[R1, E, A]): Step[R0] = StreamStep(value.map(ev.resolve))
+      override def resolve(value: ZStream[R1, E, A]): Step[R0]               = StreamStep(value.map(ev.resolve))
     }
-
+  def customErrorStreamSchema[R0, R1 >: R0, R2 >: R0, E, A](convertError: E => ExecutionError)(implicit
+    ev: Schema[R2, A]
+  ): Schema[R0, ZStream[R1, E, A]] =
+    new Schema[R0, ZStream[R1, E, A]] {
+      override def optional: Boolean                                         = true
+      override def toType(isInput: Boolean, isSubscription: Boolean): __Type = {
+        val t = ev.toType_(isInput, isSubscription)
+        if (isSubscription) t else makeList(if (ev.optional) t else makeNonNull(t))
+      }
+      override def resolve(value: ZStream[R1, E, A]): Step[R0]               = StreamStep(value.mapBoth(convertError, ev.resolve))
+    }
 }
 
 trait TemporalSchema {
@@ -452,6 +502,8 @@ trait TemporalSchema {
     override def resolve(value: T): Step[Any] =
       PureStep(format(value))
   }
+
+  lazy val sampleDate: ZonedDateTime = ZonedDateTime.ofInstant(Instant.EPOCH, ZoneId.ofOffset("UTC", ZoneOffset.UTC))
 
   def temporalSchema[A <: Temporal](name: String, description: Option[String] = None)(
     f: A => ResponseValue
@@ -482,7 +534,9 @@ trait TemporalSchema {
   def localDateTimeSchemaWithFormatter(formatter: DateTimeFormatter): Schema[Any, LocalDateTime] =
     temporalSchemaWithFormatter(
       "LocalDateTime",
-      Some(s"A date-time without a time-zone in the ISO-8601 calendar system in the format of $formatter")
+      Some(
+        s"A date-time without a time-zone in the ISO-8601 calendar system in the format of ${formatter.format(sampleDate)}"
+      )
     )(formatter)
 
   implicit lazy val offsetDateTimeSchema: Schema[Any, OffsetDateTime] =
@@ -491,7 +545,9 @@ trait TemporalSchema {
   def offsetDateTimeSchemaWithFormatter(formatter: DateTimeFormatter): Schema[Any, OffsetDateTime] =
     temporalSchemaWithFormatter(
       "OffsetDateTime",
-      Some(s"A date-time with an offset from UTC/Greenwich in the ISO-8601 calendar system using the format $formatter")
+      Some(
+        s"A date-time with an offset from UTC/Greenwich in the ISO-8601 calendar system using the format ${formatter.format(sampleDate)}"
+      )
     )(formatter)
 
   implicit lazy val zonedDateTimeSchema: Schema[Any, ZonedDateTime] =
@@ -503,7 +559,9 @@ trait TemporalSchema {
   def zonedDateTimeSchemaWithFormatter(formatter: DateTimeFormatter): Schema[Any, ZonedDateTime] =
     temporalSchemaWithFormatter(
       "ZonedDateTime",
-      Some(s"A date-time with a time-zone in the ISO-8601 calendar system using the format $formatter")
+      Some(
+        s"A date-time with a time-zone in the ISO-8601 calendar system using the format ${formatter.format(sampleDate)}"
+      )
     )(formatter)
 
   implicit lazy val localDateSchema: Schema[Any, LocalDate] =
@@ -518,7 +576,9 @@ trait TemporalSchema {
   def localDateSchemaWithFormatter(formatter: DateTimeFormatter): Schema[Any, LocalDate] =
     temporalSchemaWithFormatter(
       "LocalDate",
-      Some(s"A date without a time-zone in the ISO-8601 calendar system using the format $formatter")
+      Some(
+        s"A date without a time-zone in the ISO-8601 calendar system using the format ${formatter.format(sampleDate)}"
+      )
     )(formatter)
 
   implicit lazy val localTimeSchema: Schema[Any, LocalTime] =
@@ -527,53 +587,55 @@ trait TemporalSchema {
   def localTimeSchemaWithFormatter(formatter: DateTimeFormatter): Schema[Any, LocalTime] =
     temporalSchemaWithFormatter(
       "LocalTime",
-      Some(s"A time without a time-zone in the ISO-8601 calendar system using the format $formatter")
+      Some(
+        s"A time without a time-zone in the ISO-8601 calendar system using the format ${formatter.format(sampleDate)}"
+      )
     )(formatter)
 
 }
 
 case class FieldAttributes(isInput: Boolean, isSubscription: Boolean)
 
-case class PartiallyAppliedField[V](
-  name: String,
-  description: Option[String],
-  directives: List[Directive]
-) {
+abstract class PartiallyAppliedFieldBase[V](name: String, description: Option[String], directives: List[Directive]) {
   def apply[R, V1](fn: V => V1)(implicit ev: Schema[R, V1], ft: FieldAttributes): (__Field, V => Step[R]) =
     either[R, V1](v => Left(fn(v)))(ev, ft)
 
   def either[R, V1](
     fn: V => Either[V1, Step[R]]
-  )(implicit ev: Schema[R, V1], ft: FieldAttributes): (__Field, V => Step[R]) =
-    (
-      __Field(
-        name,
-        description,
-        Nil,
-        () =>
-          if (ev.optional) ev.toType_(ft.isInput, ft.isSubscription)
-          else Types.makeNonNull(ev.toType_(ft.isInput, ft.isSubscription)),
-        directives = Some(directives).filter(_.nonEmpty)
-      ),
-      (v: V) => fn(v).fold(ev.resolve, identity)
+  )(implicit ev: Schema[R, V1], ft: FieldAttributes): (__Field, V => Step[R])
+
+  protected def makeField[R, V1](implicit ev: Schema[R, V1], ft: FieldAttributes): __Field =
+    __Field(
+      name,
+      description,
+      Nil,
+      () =>
+        if (ev.optional) ev.toType_(ft.isInput, ft.isSubscription)
+        else Types.makeNonNull(ev.toType_(ft.isInput, ft.isSubscription)),
+      directives = Some(directives).filter(_.nonEmpty)
     )
 }
 
-case class PartiallyAppliedFieldWithArgs[V, A](
-  name: String,
-  description: Option[String],
-  directives: List[Directive]
-) {
-  def apply[R, V1](
-    fn: V => (A => V1)
-  )(implicit ev1: Schema[R, A => V1], fa: FieldAttributes): (__Field, V => Step[R]) =
+case class PartiallyAppliedField[V](name: String, description: Option[String], directives: List[Directive])
+    extends PartiallyAppliedFieldBase[V](name, description, directives) {
+  def either[R, V1](
+    fn: V => Either[V1, Step[R]]
+  )(implicit ev: Schema[R, V1], ft: FieldAttributes): (__Field, V => Step[R]) =
+    (makeField, (v: V) => fn(v).fold(ev.resolve, identity))
+}
+
+case class PartiallyAppliedFieldLazy[V](name: String, description: Option[String], directives: List[Directive])
+    extends PartiallyAppliedFieldBase[V](name, description, directives) {
+  def either[R, V1](
+    fn: V => Either[V1, Step[R]]
+  )(implicit ev: Schema[R, V1], ft: FieldAttributes): (__Field, V => Step[R]) =
+    (makeField, (v: V) => FunctionStep(_ => fn(v).fold(ev.resolve, identity)))
+}
+
+case class PartiallyAppliedFieldWithArgs[V, A](name: String, description: Option[String], directives: List[Directive]) {
+  def apply[R, V1](fn: V => (A => V1))(implicit ev1: Schema[R, A => V1], fa: FieldAttributes): (__Field, V => Step[R]) =
     (
-      __Field(
-        name,
-        description,
-        ev1.arguments,
-        () => ev1.toType_(fa.isInput, fa.isSubscription)
-      ),
+      __Field(name, description, ev1.arguments, () => ev1.toType_(fa.isInput, fa.isSubscription)),
       (v: V) => ev1.resolve(fn(v))
     )
 }

@@ -1,6 +1,7 @@
 # Resources
 
 ## Talks
+- [Zymposium episode on Caliban](https://youtu.be/mzqsXklbmfM) with Pierre Ricadat, Kit Langton and Adam Fraser in June 2021
 - [A Tour of Caliban](https://www.youtube.com/watch?v=lgxUKsOH65k) by Pierre Ricadat at [SF Scala](https://www.meetup.com/SF-Scala/) in April 2020
 - [Caliban: Designing a Functional GraphQL Library](https://www.youtube.com/watch?v=OC8PbviYUlQ) by Pierre Ricadat at [Functional Scala](https://www.functionalscala.com/) in December 2019 (slides available [here](https://www.slideshare.net/PierreRicadat/designing-a-functional-graphql-library-204680947))
 
@@ -15,6 +16,7 @@
 
 ## Related Projects
 
+- [caliban-deriving](https://zio.github.io/caliban-deriving/): an alternative schema derivation implementation that supports additional use cases such as deriving fields from class methods (can be used side by side with caliban regular derivation, on the types you want).
 - [caliban-extras](https://github.com/niqdev/caliban-extras): a project bringing some goodies to caliban, including [caliban-refined](https://github.com/niqdev/caliban-extras#caliban-refined), a module to automatically derive schemas for [refined](https://github.com/fthomas/refined) types.
 - [zio-akka-quickstart](https://github.com/ScalaConsultants/zio-akka-quickstart.g8): a Giter8 template for a basic Scala application built using ZIO, Akka HTTP, Slick and Caliban!
 - [caliban-talk](https://github.com/fokot/caliban-talk): example project using ZIO, http4s, doobie/quill, caliban-client, testcontainers and Caliban

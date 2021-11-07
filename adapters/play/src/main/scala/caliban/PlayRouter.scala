@@ -1,6 +1,5 @@
 package caliban
 
-import scala.concurrent.ExecutionContext
 import akka.stream.Materializer
 import caliban.PlayAdapter.RequestWrapper
 import caliban.execution.QueryExecution
@@ -12,6 +11,8 @@ import zio.Runtime
 import zio.blocking.Blocking
 import zio.duration.Duration
 import zio.random.Random
+
+import scala.concurrent.ExecutionContext
 
 case class PlayRouter[R <: Blocking with Random, E](
   interpreter: GraphQLInterpreter[R, E],
@@ -56,7 +57,7 @@ case class PlayRouter[R <: Blocking with Random, E](
         extensions
       )
     case GET(p"/ws/graphql") if subscriptions =>
-      makeWebSocket(interpreter, skipValidation, enableIntrospection, keepAliveTime, queryExecution)
+      makeWebSocketOrResult(interpreter, skipValidation, enableIntrospection, keepAliveTime, queryExecution)
     case GET(p"/graphiql") if playground      =>
       actionBuilder(
         Results.Ok

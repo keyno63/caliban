@@ -4,7 +4,7 @@
 
 No worries! Head to the [Resources](https://ghostdogpr.github.io/caliban/resources/) page to find a few introductory videos and blog posts. Once you're ready for more details, check the [Documentation](https://ghostdogpr.github.io/caliban/docs/). If you prefer looking at some code first, check [this list of examples](https://ghostdogpr.github.io/caliban/docs/examples.html).
 
-If you're still lost, just come to the [Discord channel](https://discordapp.com/channels/629491597070827530/633200096393166868)!
+If you're still lost, just come to the [Discord channel](https://discord.gg/EYpumuv)!
  
 ### I'm getting a compilation error saying a `Schema` is missing, but I don't know which one.
 
@@ -60,7 +60,7 @@ implicit val schemaMyType: Schema[Any, MyType] = Schema.gen
 ```
 That way, the schema for this type will be extracted to a single method and defined only once. Do it in priority with types that are re-used in a lot of places: this will reduce the amount of generated code and will speed up compilation time.
 
-### How can I defined a Schema for a Java enum?
+### How can I define a `Schema` for a Java enum?
 
 Here's an example for Java `DayOfWeek`:
 ```scala  
@@ -75,3 +75,17 @@ implicit val dayOfWeekSchema = new Schema[Any, DayOfWeek] {
   override def resolve(value: DayOfWeek): Step[Any] = PureStep(StringValue(value.name))
 }
 ```
+
+### I don't want to use `Throwable` as my error type
+
+Caliban provides `Schema` instances for `ZIO`, `ZQuery` and `ZStream` but with the condition that the error type is a `Throwable`.
+That is because the error is eventually wrapped inside Caliban `ExecutionError` and we need to know what it is. 
+However, you can easily define a custom `Schema` without this constraint, as long as you provide a function from your error type to `ExecutionError`.
+
+For example, if your error type is `Int`, you can use `Schema.customErrorEffectSchema` as follows:
+```scala
+implicit def customEffectSchema[A](implicit s: Schema[Any, A]): Schema[Any, IO[Int, A]] =
+  Schema.customErrorEffectSchema((code: Int) => ExecutionError(s"Error code $code"))
+```
+With this implicit in scope, Caliban will know how to handle any `IO[Int, A]` effects.
+Caliban will automatically fill the error path and the error location inside `ExecutionError` if an error happens during the query execution.

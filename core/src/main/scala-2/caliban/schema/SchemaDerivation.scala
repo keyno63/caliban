@@ -22,10 +22,24 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
 
   type Typeclass[T] = Schema[R, T]
 
+  def isValueType[T](ctx: ReadOnlyCaseClass[Typeclass, T]): Boolean =
+    ctx.annotations.exists {
+      case GQLValueType(_) => true
+      case _               => false
+    }
+
+  def isScalarValueType[T](ctx: ReadOnlyCaseClass[Typeclass, T]): Boolean =
+    ctx.annotations.exists {
+      case GQLValueType(true) => true
+      case _                  => false
+    }
+
   def combine[T](ctx: ReadOnlyCaseClass[Typeclass, T]): Typeclass[T] = new Typeclass[T] {
     override def toType(isInput: Boolean, isSubscription: Boolean): __Type =
-      if (ctx.isValueClass && ctx.parameters.nonEmpty) ctx.parameters.head.typeclass.toType_(isInput, isSubscription)
-      else if (isInput)
+      if ((ctx.isValueClass || isValueType(ctx)) && ctx.parameters.nonEmpty) {
+        if (isScalarValueType(ctx)) makeScalar(getName(ctx), getDescription(ctx))
+        else ctx.parameters.head.typeclass.toType_(isInput, isSubscription)
+      } else if (isInput)
         makeInputObject(
           Some(ctx.annotations.collectFirst { case GQLInputName(suffix) => suffix }
             .getOrElse(customizeInputTypeName(getName(ctx)))),
@@ -38,7 +52,7 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
                 () =>
                   if (p.typeclass.optional) p.typeclass.toType_(isInput, isSubscription)
                   else makeNonNull(p.typeclass.toType_(isInput, isSubscription)),
-                None,
+                p.annotations.collectFirst { case GQLDefault(v) => v },
                 Some(p.annotations.collect { case GQLDirective(dir) => dir }.toList).filter(_.nonEmpty)
               )
             )
@@ -70,7 +84,7 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
 
     override def resolve(value: T): Step[R] =
       if (ctx.isObject) PureStep(EnumValue(getName(ctx)))
-      else if (ctx.isValueClass && ctx.parameters.nonEmpty) {
+      else if ((ctx.isValueClass || isValueType(ctx)) && ctx.parameters.nonEmpty) {
         val head = ctx.parameters.head
         head.typeclass.resolve(head.dereference(value))
       } else {
@@ -82,21 +96,30 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
 
   def dispatch[T](ctx: SealedTrait[Typeclass, T]): Typeclass[T] = new Typeclass[T] {
     override def toType(isInput: Boolean, isSubscription: Boolean): __Type = {
-      val subtypes =
+      val subtypes    =
         ctx.subtypes
           .map(s => s.typeclass.toType_() -> s.annotations)
           .toList
           .sortBy { case (tpe, _) =>
             tpe.name.getOrElse("")
           }
-      val isEnum   = subtypes.forall {
+      val isEnum      = subtypes.forall {
         case (t, _)
             if t.fields(__DeprecatedArgs(Some(true))).forall(_.isEmpty)
               && t.inputFields.forall(_.isEmpty) =>
           true
         case _ => false
       }
-      if (isEnum && subtypes.nonEmpty)
+      val isInterface = ctx.annotations.exists {
+        case GQLInterface() => true
+        case _              => false
+      }
+      val isUnion     = ctx.annotations.exists {
+        case GQLUnion() => true
+        case _          => false
+      }
+
+      if (isEnum && subtypes.nonEmpty && !isInterface && !isUnion)
         makeEnum(
           Some(getName(ctx)),
           getDescription(ctx),
@@ -110,34 +133,30 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
           },
           Some(ctx.typeName.full)
         )
+      else if (!isInterface)
+        makeUnion(
+          Some(getName(ctx)),
+          getDescription(ctx),
+          subtypes.map { case (t, _) => fixEmptyUnionObject(t) },
+          Some(ctx.typeName.full)
+        )
       else {
-        ctx.annotations.collectFirst { case GQLInterface() =>
-          ()
-        }.fold(
-          makeUnion(
-            Some(getName(ctx)),
-            getDescription(ctx),
-            subtypes.map { case (t, _) => fixEmptyUnionObject(t) },
-            Some(ctx.typeName.full)
-          )
-        ) { _ =>
-          val impl         = subtypes.map(_._1.copy(interfaces = () => Some(List(toType(isInput, isSubscription)))))
-          val commonFields = () =>
-            impl
-              .flatMap(_.fields(__DeprecatedArgs(Some(true))))
-              .flatten
-              .groupBy(_.name)
-              .filter({ case (name, list) => list.lengthCompare(impl.size) == 0 })
-              .collect { case (name, list) =>
-                Types
-                  .unify(list.map(_.`type`()))
-                  .flatMap(t => list.headOption.map(_.copy(`type` = () => t)))
-              }
-              .flatten
-              .toList
+        val impl         = subtypes.map(_._1.copy(interfaces = () => Some(List(toType(isInput, isSubscription)))))
+        val commonFields = () =>
+          impl
+            .flatMap(_.fields(__DeprecatedArgs(Some(true))))
+            .flatten
+            .groupBy(_.name)
+            .filter { case (_, list) => list.lengthCompare(impl.size) == 0 }
+            .collect { case (_, list) =>
+              Types
+                .unify(list.map(_.`type`()))
+                .flatMap(t => list.headOption.map(_.copy(`type` = () => t)))
+            }
+            .flatten
+            .toList
 
-          makeInterface(Some(getName(ctx)), getDescription(ctx), commonFields, impl, Some(ctx.typeName.full))
-        }
+        makeInterface(Some(getName(ctx)), getDescription(ctx), commonFields, impl, Some(ctx.typeName.full))
       }
     }
 
@@ -167,7 +186,7 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
       ctx.dispatch(value)(subType => subType.typeclass.resolve(subType.cast(value)))
   }
 
-  private def getDirectives(annotations: Seq[Any]): List[Directive]                                       =
+  private def getDirectives(annotations: Seq[Any]): List[Directive] =
     annotations.collect { case GQLDirective(dir) => dir }.toList
 
   private def getDirectives[Typeclass[_], Type](ctx: ReadOnlyCaseClass[Typeclass, Type]): List[Directive] =
@@ -187,10 +206,10 @@ trait SchemaDerivation[R] extends LowPriorityDerivedSchema {
   private def getName[Typeclass[_], Type](ctx: SealedTrait[Typeclass, Type]): String =
     getName(ctx.annotations, ctx.typeName)
 
-  private def getName[Typeclass[_], Type](ctx: ReadOnlyParam[Typeclass, Type]): String                    =
+  private def getName[Typeclass[_], Type](ctx: ReadOnlyParam[Typeclass, Type]): String =
     ctx.annotations.collectFirst { case GQLName(name) => name }.getOrElse(ctx.label)
 
-  private def getDescription(annotations: Seq[Any]): Option[String]                                       =
+  private def getDescription(annotations: Seq[Any]): Option[String] =
     annotations.collectFirst { case GQLDescription(desc) => desc }
 
   private def getDescription[Typeclass[_], Type](ctx: ReadOnlyCaseClass[Typeclass, Type]): Option[String] =

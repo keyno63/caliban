@@ -8,7 +8,7 @@ import caliban.client.__Value.__ObjectValue
 import io.circe.{ parser, Json }
 import sttp.client3._
 import sttp.client3.circe._
-import sttp.model.{ MediaType, Uri }
+import sttp.model.Uri
 
 import scala.collection.immutable.{ Map => SMap }
 
@@ -49,31 +49,38 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
   def withAlias(alias: String): SelectionBuilder[Origin, A]
 
   /**
-   * Parse the given response payload into the excepted return type, with an optional extensions object
+   * Parse the given response payload into the expected return type,
+   * with an potential list of partial errors and an optional extensions object
    */
-  def decode(payload: String): Either[CalibanClientError, (A, Option[Json])] =
+  def decode(payload: String): Either[CalibanClientError, (A, List[GraphQLResponseError], Option[Json])] =
     for {
       parsed      <- parser
                        .decode[GraphQLResponse](payload)
                        .left
                        .map(ex => DecodingError("Json deserialization error", Some(ex)))
-      data        <- if (parsed.errors.nonEmpty) Left(ServerError(parsed.errors)) else Right(parsed.data)
+      data        <- if (parsed.errors.nonEmpty && parsed.data.forall(_ == __Value.__NullValue))
+                       Left(ServerError(parsed.errors))
+                     else Right(parsed.data)
       objectValue <- data match {
                        case Some(o: __ObjectValue) => Right(o)
                        case _                      => Left(DecodingError("Result is not an object"))
                      }
       result      <- self.fromGraphQL(objectValue)
-    } yield (result, parsed.extensions)
+    } yield (result, parsed.errors, parsed.extensions)
 
   /**
    * Transforms a root selection into a GraphQL request.
    * @param useVariables if true, all arguments will be passed as variables (default: false)
+   * @param queryName if specified, use the given query name
+   * @param dropNullInputValues if true, drop all null values from input object arguments (default: false)
    */
   def toGraphQL[A1 >: A, Origin1 <: Origin](
     useVariables: Boolean = false,
-    queryName: Option[String] = None
+    queryName: Option[String] = None,
+    dropNullInputValues: Boolean = false
   )(implicit ev: IsOperation[Origin1]): GraphQLRequest = {
-    val (fields, variables) = SelectionBuilder.toGraphQL(toSelectionSet, useVariables)
+    val (fields, variables) =
+      SelectionBuilder.toGraphQL(toSelectionSet, useVariables, dropNullInputValues)
     val variableDef         =
       if (variables.nonEmpty)
         s"(${variables.map { case (name, (_, typeName)) => s"$$$name: $typeName" }.mkString(",")})"
@@ -85,40 +92,51 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
 
   /**
    * Transforms a root selection into an STTP request ready to be run.
+   * To access partial errors and extensions, use `toRequestWith`.
    * @param uri the URL of the GraphQL server
    * @param useVariables if true, all arguments will be passed as variables (default: false)
+   * @param queryName if specified, use the given query name
+   * @param dropNullInputValues if true, drop all null values from input object arguments (default: false)
    * @return an STTP request
    */
   def toRequest[A1 >: A, Origin1 <: Origin](
     uri: Uri,
     useVariables: Boolean = false,
-    queryName: Option[String] = None
+    queryName: Option[String] = None,
+    dropNullInputValues: Boolean = false
   )(implicit ev: IsOperation[Origin1]): Request[Either[CalibanClientError, A1], Any] =
-    toRequestWithExtensions[A1, Origin1](uri, useVariables, queryName)(ev).mapResponse {
-      case Right((r, _)) => Right(r)
-      case Left(l)       => Left(l)
-    }
+    toRequestWith[A1, Origin1](uri, useVariables, queryName, dropNullInputValues)((res, _, _) => res)(ev)
 
   /**
    * Transforms a root selection into an STTP request ready to be run.
+   * More powerful than `toRequest`, it gives you access to partial errors and extensions.
    * @param uri the URL of the GraphQL server
    * @param useVariables if true, all arguments will be passed as variables (default: false)
+   * @param queryName if specified, use the given query name
+   * @param dropNullInputValues if true, drop all null values from input object arguments (default: false)
    * @return an STTP request
    */
-  def toRequestWithExtensions[A1 >: A, Origin1 <: Origin](
+  def toRequestWith[B, Origin1 <: Origin](
     uri: Uri,
     useVariables: Boolean = false,
-    queryName: Option[String] = None
-  )(implicit ev: IsOperation[Origin1]): Request[Either[CalibanClientError, (A1, Option[Json])], Any] =
+    queryName: Option[String] = None,
+    dropNullInputValues: Boolean = false
+  )(
+    mapResponse: (A, List[GraphQLResponseError], Option[Json]) => B
+  )(implicit ev: IsOperation[Origin1]): Request[Either[CalibanClientError, B], Any] =
     basicRequest
       .post(uri)
-      .body(toGraphQL(useVariables, queryName))
-      .mapResponse(_.left.map(CommunicationError(_)).flatMap(decode))
+      .body(toGraphQL(useVariables, queryName, dropNullInputValues))
+      .mapResponse(
+        _.left
+          .map(CommunicationError(_))
+          .flatMap(decode(_).map { case (result, errors, extensions) => mapResponse(result, errors, extensions) })
+      )
 
   /**
    * Maps a tupled result to a type `Res` using a  function `f` with 2 parameters
    */
-  def mapN[B, C, Res](f: (B, C) => Res)(implicit ev: A <:< (B, C)): SelectionBuilder[Origin, Res]            =
+  def mapN[B, C, Res](f: (B, C) => Res)(implicit ev: A <:< (B, C)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case (b, c) => f(b, c) })
 
   /**
@@ -132,7 +150,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, Res](
     f: (B, C, D, E) => Res
-  )(implicit ev: A <:< (((B, C), D), E)): SelectionBuilder[Origin, Res]                                      =
+  )(implicit ev: A <:< (((B, C), D), E)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case (((b, c), d), e) => f(b, c, d, e) })
 
   /**
@@ -140,7 +158,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, Res](
     f: (B, C, D, E, F) => Res
-  )(implicit ev: A <:< ((((B, C), D), E), F)): SelectionBuilder[Origin, Res]                                 =
+  )(implicit ev: A <:< ((((B, C), D), E), F)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case ((((b, c), d), e), ff) => f(b, c, d, e, ff) })
 
   /**
@@ -148,7 +166,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, Res](
     f: (B, C, D, E, F, G) => Res
-  )(implicit ev: A <:< (((((B, C), D), E), F), G)): SelectionBuilder[Origin, Res]                            =
+  )(implicit ev: A <:< (((((B, C), D), E), F), G)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case (((((b, c), d), e), ff), g) => f(b, c, d, e, ff, g) })
 
   /**
@@ -156,7 +174,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, H, Res](
     f: (B, C, D, E, F, G, H) => Res
-  )(implicit ev: A <:< ((((((B, C), D), E), F), G), H)): SelectionBuilder[Origin, Res]                       =
+  )(implicit ev: A <:< ((((((B, C), D), E), F), G), H)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case ((((((b, c), d), e), ff), g), h) => f(b, c, d, e, ff, g, h) })
 
   /**
@@ -164,7 +182,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, H, I, Res](
     f: (B, C, D, E, F, G, H, I) => Res
-  )(implicit ev: A <:< (((((((B, C), D), E), F), G), H), I)): SelectionBuilder[Origin, Res]                  =
+  )(implicit ev: A <:< (((((((B, C), D), E), F), G), H), I)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case (((((((b, c), d), e), ff), g), h), i) => f(b, c, d, e, ff, g, h, i) })
 
   /**
@@ -172,7 +190,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, H, I, J, Res](
     f: (B, C, D, E, F, G, H, I, J) => Res
-  )(implicit ev: A <:< ((((((((B, C), D), E), F), G), H), I), J)): SelectionBuilder[Origin, Res]             =
+  )(implicit ev: A <:< ((((((((B, C), D), E), F), G), H), I), J)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case ((((((((b, c), d), e), ff), g), h), i), j) => f(b, c, d, e, ff, g, h, i, j) })
 
   /**
@@ -180,7 +198,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, H, I, J, K, Res](
     f: (B, C, D, E, F, G, H, I, J, K) => Res
-  )(implicit ev: A <:< (((((((((B, C), D), E), F), G), H), I), J), K)): SelectionBuilder[Origin, Res]        =
+  )(implicit ev: A <:< (((((((((B, C), D), E), F), G), H), I), J), K)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case (((((((((b, c), d), e), ff), g), h), i), j), k) => f(b, c, d, e, ff, g, h, i, j, k) })
 
   /**
@@ -188,7 +206,7 @@ sealed trait SelectionBuilder[-Origin, +A] { self =>
    */
   def mapN[B, C, D, E, F, G, H, I, J, K, L, Res](
     f: (B, C, D, E, F, G, H, I, J, K, L) => Res
-  )(implicit ev: A <:< ((((((((((B, C), D), E), F), G), H), I), J), K), L)): SelectionBuilder[Origin, Res]   =
+  )(implicit ev: A <:< ((((((((((B, C), D), E), F), G), H), I), J), K), L)): SelectionBuilder[Origin, Res] =
     self.map(ev.andThen { case ((((((((((b, c), d), e), ff), g), h), i), j), k), l) =>
       f(b, c, d, e, ff, g, h, i, j, k, l)
     })
@@ -347,7 +365,7 @@ object SelectionBuilder {
     alias: Option[String] = None,
     arguments: List[Argument[_]] = Nil,
     directives: List[Directive] = Nil
-  )                        extends SelectionBuilder[Origin, A] { self =>
+  ) extends SelectionBuilder[Origin, A] { self =>
     override def fromGraphQL(value: __Value): Either[DecodingError, A] =
       value match {
         case __ObjectValue(fields) =>
@@ -382,7 +400,7 @@ object SelectionBuilder {
     override def withAlias(alias: String): SelectionBuilder[Origin, (A, B)] = self // makes no sense, do nothing
   }
   case class Mapping[Origin, A, B](builder: SelectionBuilder[Origin, A], f: A => Either[DecodingError, B])
-      extends SelectionBuilder[Origin, B] {
+      extends SelectionBuilder[Origin, B]      {
     override def fromGraphQL(value: __Value): Either[DecodingError, B] = builder.fromGraphQL(value).flatMap(f)
 
     override def withDirective(directive: Directive): SelectionBuilder[Origin, B] =
@@ -392,7 +410,7 @@ object SelectionBuilder {
 
     override def withAlias(alias: String): SelectionBuilder[Origin, B] = Mapping(builder.withAlias(alias), f)
   }
-  case class Pure[A](a: A) extends SelectionBuilder[Any, A]    { self =>
+  case class Pure[A](a: A) extends SelectionBuilder[Any, A] { self =>
     override private[caliban] def toSelectionSet = Nil
 
     override private[caliban] def fromGraphQL(value: __Value) = Right(a)
@@ -421,20 +439,21 @@ object SelectionBuilder {
   def toGraphQL(
     fields: List[Selection],
     useVariables: Boolean,
+    dropNullInputValues: Boolean = false,
     variables: SMap[String, (__Value, String)] = SMap()
   ): (String, SMap[String, (__Value, String)]) = {
     val fieldNames            = fields.collect { case f: Selection.Field => f }.groupBy(_.name).map { case (k, v) => k -> v.size }
     val (fields2, variables2) = fields
       .foldLeft((List.empty[String], variables)) {
         case ((fields, variables), Selection.InlineFragment(onType, selection)) =>
-          val (f, v) = toGraphQL(selection, useVariables, variables)
+          val (f, v) = toGraphQL(selection, useVariables, dropNullInputValues, variables)
           (s"... on $onType{$f}" :: fields, v)
 
         case ((fields, variables), Selection.Field(alias, name, arguments, directives, selection, code)) =>
           // format arguments
           val (args, variables2) = arguments
             .foldLeft((List.empty[String], variables)) { case ((args, variables), a) =>
-              val (a2, v2) = a.toGraphQL(useVariables, variables)
+              val (a2, v2) = a.toGraphQL(useVariables, dropNullInputValues, variables)
               (a2 :: args, v2)
             }
           val argString          = args.filterNot(_.isEmpty).reverse.mkString(",") match {
@@ -445,7 +464,7 @@ object SelectionBuilder {
           // format directives
           val (dirs, variables3) = directives
             .foldLeft((List.empty[String], variables2)) { case ((dirs, variables), d) =>
-              val (d2, v2) = d.toGraphQL(useVariables, variables)
+              val (d2, v2) = d.toGraphQL(useVariables, dropNullInputValues, variables)
               (d2 :: dirs, v2)
             }
           val dirString          = dirs.reverse.mkString(" ") match {
@@ -459,7 +478,7 @@ object SelectionBuilder {
                              else alias).fold("")(_ + ":")
 
           // format selection
-          val (sel, variables4) = toGraphQL(selection, useVariables, variables3)
+          val (sel, variables4) = toGraphQL(selection, useVariables, dropNullInputValues, variables3)
           val selString         = if (sel.nonEmpty) s"{$sel}" else ""
 
           (s"$aliasString$name$argString$dirString$selString" :: fields, variables4)

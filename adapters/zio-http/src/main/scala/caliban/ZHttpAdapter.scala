@@ -11,14 +11,16 @@ import caliban.execution.QueryExecution
 import io.circe._
 import io.circe.parser._
 import io.circe.syntax._
+import io.netty.handler.codec.http.HttpHeaderNames
+import io.netty.handler.codec.http.HttpUtil
+import java.nio.charset.Charset
 import zhttp.http._
 import zhttp.socket.SocketApp
 import zhttp.socket.WebSocketFrame.Text
 import zhttp.socket._
-import io.netty.handler.codec.http.HttpHeaderNames
 
 object ZHttpAdapter {
-  case class GraphQLWSRequest(`type`: String, id: Option[String], payload: Option[GraphQLRequest])
+  case class GraphQLWSRequest(`type`: String, id: Option[String], payload: Option[Json])
   object GraphQLWSRequest {
     import io.circe._
     import io.circe.generic.semiauto._
@@ -26,10 +28,66 @@ object ZHttpAdapter {
     implicit val decodeGraphQLWSRequest: Decoder[GraphQLWSRequest] = deriveDecoder[GraphQLWSRequest]
   }
 
+  case class Callbacks[R, E](
+    beforeInit: Option[io.circe.Json => ZIO[R, E, Any]] = None,
+    afterInit: Option[ZIO[R, E, Any]] = None,
+    onMessage: Option[ZStream[R, E, Text] => ZStream[R, E, Text]] = None
+  ) { self =>
+    def ++(other: Callbacks[R, E]): Callbacks[R, E] =
+      Callbacks(
+        beforeInit = (self.beforeInit, other.beforeInit) match {
+          case (None, Some(f))      => Some(f)
+          case (Some(f), None)      => Some(f)
+          case (Some(f1), Some(f2)) => Some((x: io.circe.Json) => f1(x) *> f2(x))
+          case _                    => None
+        },
+        afterInit = (self.afterInit, other.afterInit) match {
+          case (None, Some(f))      => Some(f)
+          case (Some(f), None)      => Some(f)
+          case (Some(f1), Some(f2)) => Some(f1 &> f2)
+          case _                    => None
+        },
+        onMessage = (self.onMessage, other.onMessage) match {
+          case (None, Some(f))      => Some(f)
+          case (Some(f), None)      => Some(f)
+          case (Some(f1), Some(f2)) => Some(f1 andThen f2)
+          case _                    => None
+        }
+      )
+  }
+
+  object Callbacks {
+    def empty[R, E]: Callbacks[R, E] = Callbacks[R, E](None, None)
+
+    /**
+     * Specifies a callback that will be run before an incoming subscription
+     * request is accepted. Useful for e.g authorizing the incoming subscription
+     * before accepting it.
+     */
+    def init[R, E](f: io.circe.Json => ZIO[R, E, Any]): Callbacks[R, E] = Callbacks(Some(f), None, None)
+
+    /**
+     * Specifies a callback that will be run after an incoming subscription
+     * request has been accepted. Useful for e.g terminating a subscription
+     * after some time, such as authorization expiring.
+     */
+    def afterInit[R, E](f: ZIO[R, E, Any]): Callbacks[R, E] = Callbacks(None, Some(f), None)
+
+    /**
+     * Specifies a callback that will be run on the resulting `ZStream`
+     * for every active subscription. Useful to e.g modify the environment
+     * to inject session information into the `ZStream` handling the
+     * subscription.
+     */
+    def message[R, E](f: ZStream[R, E, Text] => ZStream[R, E, Text]): Callbacks[R, E] = Callbacks(None, None, Some(f))
+  }
+
   type Subscriptions = Ref[Map[String, Promise[Any, Unit]]]
 
-  private val contentTypeApplicationGraphQL: Header =
-    Header.custom(HttpHeaderNames.CONTENT_TYPE.toString(), "application/graphql")
+  private def isApplicationGraphQL(r: Request) = {
+    val contentType = r.getContentType
+    contentType.map(ct => HttpUtil.getMimeType(ct).toString == "application/graphql").getOrElse(false)
+  }
 
   def makeHttpService[R, E](
     interpreter: GraphQLInterpreter[R, E],
@@ -57,6 +115,40 @@ object ZHttpAdapter {
         ZIO.succeed(Response.http(Status.NO_CONTENT))
     }
 
+  /**
+   * Effectfully creates a `SocketApp`, which can be used from
+   * a zio-http router via Http.fromEffectFunction or Http.fromResponseM.
+   * This is a lower level API that allows for greater control than
+   * `makeWebSocketService` so that it's possible to implement functionality such
+   * as intercepting the initial request before the WebSocket upgrade,
+   * handling authentication in the connection_init message, or shutdown
+   * the websocket after some duration has passed (like a session expiring).
+   */
+  def makeWebSocketHandler[R <: Has[_], E](
+    interpreter: GraphQLInterpreter[R, E],
+    skipValidation: Boolean = false,
+    enableIntrospection: Boolean = true,
+    keepAliveTime: Option[Duration] = None,
+    queryExecution: QueryExecution = QueryExecution.Parallel,
+    callbacks: Callbacks[R, E] = Callbacks.empty
+  ): ZIO[R, Nothing, SocketApp[R with Clock, E]] = for {
+    ref <- Ref.make(Map.empty[String, Promise[Any, Unit]])
+  } yield socketHandler(
+    ref,
+    interpreter,
+    skipValidation,
+    enableIntrospection,
+    keepAliveTime,
+    queryExecution,
+    callbacks
+  )
+
+  /**
+   * Creates an `HttpApp` that can handle GraphQL subscriptions.
+   * This is a higher level API than `makeWebSocketHandler`. If you need
+   * additional control over the websocket lifecycle please use
+   * makeWebSocketHandler instead.
+   */
   def makeWebSocketService[R <: Has[_], E](
     interpreter: GraphQLInterpreter[R, E],
     skipValidation: Boolean = false,
@@ -68,7 +160,7 @@ object ZHttpAdapter {
       for {
         ref <- Ref.make(Map.empty[String, Promise[Any, Unit]])
       } yield Response.socket(
-        socketHandler(
+        socketHandler[R, E](
           ref,
           interpreter,
           skipValidation,
@@ -85,18 +177,35 @@ object ZHttpAdapter {
     skipValidation: Boolean,
     enableIntrospection: Boolean,
     keepAliveTime: Option[Duration],
-    queryExecution: QueryExecution
+    queryExecution: QueryExecution,
+    callbacks: Callbacks[R, E] = Callbacks.empty[R, E]
   ): SocketApp[R with Clock, E] = {
     val routes = Socket.collect[WebSocketFrame] { case Text(text) =>
       ZStream
         .fromEffect(ZIO.fromEither(decode[GraphQLWSRequest](text)))
-        .collect({
-          case GraphQLWSRequest("connection_init", _, _)      => connectionAck ++ keepAlive(keepAliveTime)
+        .collect {
+          case GraphQLWSRequest("connection_init", id, payload) =>
+            val before = (callbacks.beforeInit, payload) match {
+              case (Some(beforeInit), Some(payload)) =>
+                ZStream.fromEffect(beforeInit(payload)).drain.catchAll(toStreamError(id, _))
+              case _                                 => Stream.empty
+            }
+
+            val response = connectionAck ++ keepAlive(keepAliveTime)
+
+            val after = callbacks.afterInit match {
+              case Some(afterInit) => ZStream.fromEffect(afterInit).drain.catchAll(toStreamError(id, _))
+              case _               => Stream.empty
+            }
+
+            before ++ ZStream.mergeAllUnbounded()(response, after)
+
           case GraphQLWSRequest("connection_terminate", _, _) => close
           case GraphQLWSRequest("start", id, payload)         =>
-            payload match {
+            val request = payload.flatMap(_.as[GraphQLRequest].toOption)
+            request match {
               case Some(req) =>
-                generateGraphQLResponse(
+                val stream = generateGraphQLResponse(
                   req,
                   id.getOrElse(""),
                   interpreter,
@@ -104,13 +213,16 @@ object ZHttpAdapter {
                   enableIntrospection,
                   queryExecution,
                   subscriptions
-                ).catchAll(toStreamError(id, _))
-              case None      => connectionError
+                )
+
+                callbacks.onMessage.map(_(stream)).getOrElse(stream).catchAll(toStreamError(id, _))
+
+              case None => connectionError
             }
           case GraphQLWSRequest("stop", id, _)                =>
             removeSubscription(id, subscriptions) *> ZStream.empty
 
-        })
+        }
         .flatten
         .catchAll(_ => connectionError)
     }
@@ -119,22 +231,38 @@ object ZHttpAdapter {
   }
 
   private def queryFromQueryParams(req: Request) = {
-    val params = List("query", "operationName", "variables", "extensions")
-      .collect({ case k =>
-        k -> req.url.queryParams.get(k).flatMap(_.headOption).getOrElse("")
-      })
-      .toMap
-    ZIO.fromEither(decode[GraphQLRequest](params.asJson.noSpaces))
+    val variablesJs  = req.url.queryParams.get("variables").flatMap(_.headOption).flatMap(parse(_).toOption)
+    val extensionsJs = req.url.queryParams.get("extensions").flatMap(_.headOption).flatMap(parse(_).toOption)
+    val fields       = List(
+      "query" -> Json.fromString(req.url.queryParams.get("query").flatMap(_.headOption).getOrElse(""))
+    ) ++
+      req.url.queryParams.get("operationName").flatMap(_.headOption).map(o => "operationName" -> Json.fromString(o)) ++
+      variablesJs.map(js => "variables" -> js) ++
+      extensionsJs.map(js => "extensions" -> js)
+
+    ZIO.fromEither(Json.fromFields(fields).as[GraphQLRequest])
   }
 
   private def queryFromRequest(req: Request) =
     if (req.url.queryParams.contains("query")) {
       queryFromQueryParams(req)
-    } else if (req.headers.contains(contentTypeApplicationGraphQL)) {
-      ZIO.succeed(GraphQLRequest(query = req.getBodyAsString))
+    } else if (isApplicationGraphQL(req)) {
+      ZIO.succeed(GraphQLRequest(query = getBody(req)))
     } else {
-      ZIO.fromEither(decode[GraphQLRequest](req.getBodyAsString.getOrElse("")))
+      ZIO.fromEither(decode[GraphQLRequest](getBody(req).getOrElse("")))
     }
+
+  // Fixed in https://github.com/dream11/zio-http/pull/287
+  // but that's not released, so back port the fix for now.
+  private def getBody(r: Request): Option[String] = {
+    val getCharset: Option[Charset] =
+      r.getHeaderValue(HttpHeaderNames.CONTENT_TYPE).map(HttpUtil.getCharset(_, HTTP_CHARSET))
+
+    r.content match {
+      case HttpData.CompleteData(data) => Some(new String(data.toArray, getCharset.getOrElse(HTTP_CHARSET)))
+      case _                           => None
+    }
+  }
 
   private def generateGraphQLResponse[R, E](
     payload: GraphQLRequest,
@@ -181,13 +309,13 @@ object ZHttpAdapter {
       .foldCause(cause => GraphQLResponse(NullValue, cause.defects).asJson, _.asJson)
 
   implicit class HttpErrorOps[R, E <: Throwable, A](private val zio: ZIO[R, io.circe.Error, A]) extends AnyVal {
-    def handleHTTPError: ZIO[R, HttpError, A] = zio.mapError({
+    def handleHTTPError: ZIO[R, HttpError, A] = zio.mapError {
       case DecodingFailure(error, _)  =>
         HttpError.BadRequest.apply(s"Invalid json: $error")
       case ParsingFailure(message, _) =>
         HttpError.BadRequest.apply(message)
       case t: Throwable               => HttpError.InternalServerError.apply("Internal Server Error", Some(t.getCause))
-    })
+    }
   }
 
   private val protocol = SocketProtocol.subProtocol("graphql-ws")

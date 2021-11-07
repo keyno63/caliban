@@ -2,10 +2,11 @@ package caliban.tools
 
 import caliban.parsing.Parser
 import caliban.tools.implicits.ScalarMappings
-import zio.Task
+import zio.blocking.Blocking
 import zio.test.Assertion.equalTo
 import zio.test._
 import zio.test.environment.TestEnvironment
+import zio.{ RIO, ZIO }
 
 object SchemaWriterSpec extends DefaultRunnableSpec {
 
@@ -15,7 +16,7 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
     schema: String,
     scalarMappings: Map[String, String] = Map.empty,
     customImports: List[String] = List.empty
-  ): Task[String] = Parser
+  ): RIO[Blocking, String] = Parser
     .parseQuery(schema)
     .flatMap(doc =>
       Formatter
@@ -34,31 +35,37 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
               }
             |""".stripMargin
 
-        val typeCaseClass = Parser
-          .parseQuery(schema)
-          .map(_.objectTypeDefinitions.map(SchemaWriter.writeObject).mkString("\n"))
-          .flatMap(Formatter.format(_, None).map(_.trim))
+        val typeCaseClass: ZIO[Blocking, Throwable, String] =
+          Parser
+            .parseQuery(schema)
+            .map(_.objectTypeDefinitions.map(SchemaWriter.writeObject).mkString("\n"))
+            .flatMap(Formatter.format(_, None).map(_.trim))
 
-        val typeCaseClassArgs = Parser
-          .parseQuery(schema)
-          .map { doc =>
-            (for {
-              typeDef      <- doc.objectTypeDefinitions
-              typeDefField <- typeDef.fields
-              argClass      = SchemaWriter.writeArguments(typeDefField, typeDef) if argClass.length > 0
-            } yield argClass).mkString("\n")
-          }
-          .flatMap(Formatter.format(_, None).map(_.trim))
+        val typeCaseClassArgs: ZIO[Blocking, Throwable, String] =
+          Parser
+            .parseQuery(schema)
+            .map { doc =>
+              (for {
+                typeDef      <- doc.objectTypeDefinitions
+                typeDefField <- typeDef.fields
+                argClass      = SchemaWriter.writeArguments(typeDefField, typeDef) if argClass.nonEmpty
+              } yield argClass).mkString("\n")
+            }
+            .flatMap(Formatter.format(_, None).map(_.trim))
 
-        assertM(typeCaseClass)(
+        val a = assertM(typeCaseClass)(
           equalTo(
-            "case class Hero(name: HeroNameArgs () => String, nick: String, bday: Option[Int])"
-          )
-        ) andThen assertM(typeCaseClassArgs)(
-          equalTo(
-            "case class HeroNameArgs(pad: Int)"
+            "final case class Hero(name: HeroNameArgs => String, nick: String, bday: Option[Int])"
           )
         )
+
+        val b = assertM(typeCaseClassArgs)(
+          equalTo(
+            "final case class HeroNameArgs(pad: Int)"
+          )
+        )
+
+        ZIO.mapN(a, b)(_ && _)
       },
       testM("simple queries") {
         val schema =
@@ -76,13 +83,15 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
         val result = Parser
           .parseQuery(schema)
           .map(
-            _.objectTypeDefinition("Query").map(SchemaWriter.writeRootQueryOrMutationDef(_, "zio.UIO")).mkString("\n")
+            _.objectTypeDefinition("Query")
+              .map(SchemaWriter.writeRootQueryOrMutationDef(_, "zio.UIO", false))
+              .mkString("\n")
           )
           .flatMap(Formatter.format(_, None).map(_.trim))
 
         assertM(result)(
           equalTo(
-            """case class Query(
+            """final case class Query(
   user: QueryUserArgs => zio.UIO[Option[User]],
   userList: zio.UIO[List[Option[User]]]
 )""".stripMargin
@@ -100,14 +109,14 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
           .parseQuery(schema)
           .map(
             _.objectTypeDefinition("Mutation")
-              .map(SchemaWriter.writeRootQueryOrMutationDef(_, "zio.UIO"))
+              .map(SchemaWriter.writeRootQueryOrMutationDef(_, "zio.UIO", false))
               .mkString("\n")
           )
           .flatMap(Formatter.format(_, None).map(_.trim))
 
         assertM(result)(
           equalTo(
-            """case class Mutation(
+            """final case class Mutation(
               |  setMessage: MutationSetMessageArgs => zio.UIO[Option[String]]
               |)""".stripMargin
           )
@@ -128,8 +137,61 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
         assertM(result)(
           equalTo(
             """
-              |case class Subscription(
+              |final case class Subscription(
               |UserWatch: SubscriptionUserWatchArgs => ZStream[Any, Nothing, String]
+              |)""".stripMargin
+          )
+        )
+      },
+      testM("simple queries with abstracted effect type") {
+        val schema =
+          """
+         type Query {
+           user(id: Int): User
+           userList: [User]!
+         }
+         type User {
+           id: Int
+           name: String
+           profilePic: String
+         }"""
+
+        val result = Parser
+          .parseQuery(schema)
+          .map(
+            _.objectTypeDefinition("Query").map(SchemaWriter.writeRootQueryOrMutationDef(_, "F", true)).mkString("\n")
+          )
+          .flatMap(Formatter.format(_, None).map(_.trim))
+
+        assertM(result)(
+          equalTo(
+            """final case class Query[F[_]](
+  user: QueryUserArgs => F[Option[User]],
+  userList: F[List[Option[User]]]
+)""".stripMargin
+          )
+        )
+      },
+      testM("simple mutation with abstracted effect type") {
+        val schema =
+          """
+         type Mutation {
+           setMessage(message: String): String
+         }
+         """
+        val result = Parser
+          .parseQuery(schema)
+          .map(
+            _.objectTypeDefinition("Mutation")
+              .map(SchemaWriter.writeRootQueryOrMutationDef(_, "F", true))
+              .mkString("\n")
+          )
+          .flatMap(Formatter.format(_, None).map(_.trim))
+
+        assertM(result)(
+          equalTo(
+            """final case class Mutation[F[_]](
+              |  setMessage: MutationSetMessageArgs => F[Option[String]]
               |)""".stripMargin
           )
         )
@@ -159,22 +221,22 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
               |import zio.stream.ZStream
               |
               |object Types {
-              |  case class MutationAddPostArgs(author: Option[String], comment: Option[String])
-              |  case class Post(author: Option[String], comment: Option[String])
+              |  final case class MutationAddPostArgs(author: Option[String], comment: Option[String])
+              |  final case class Post(author: Option[String], comment: Option[String])
               |
               |}
               |
               |object Operations {
               |
-              |  case class Query(
+              |  final case class Query(
               |    posts: zio.UIO[Option[List[Option[Post]]]]
               |  )
               |
-              |  case class Mutation(
+              |  final case class Mutation(
               |    addPost: MutationAddPostArgs => zio.UIO[Option[Post]]
               |  )
               |
-              |  case class Subscription(
+              |  final case class Subscription(
               |    postAdded: ZStream[Any, Nothing, Option[Post]]
               |  )
               |
@@ -221,10 +283,19 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
              Captain or Pilot
              \"\"\"
           """
+        val role2  =
+          s"""
+              \"\"\"
+             role2
+             Captain or Pilot or Stewart
+             \"\"\"
+          """
         val schema =
           s"""
              $role
              union Role = Captain | Pilot
+             $role2
+             union Role2 = Captain | Pilot | Stewart
              
              type Captain {
                "ship" shipName: String!
@@ -233,27 +304,39 @@ object SchemaWriterSpec extends DefaultRunnableSpec {
              type Pilot {
                shipName: String!
              }
+             
+             type Stewart {
+               shipName: String!
+             }
             """.stripMargin
 
         assertM(gen(schema))(
           equalTo {
-            val role =
+            val role  =
               s"""\"\"\"role
 Captain or Pilot\"\"\""""
+            val role2 =
+              s"""\"\"\"role2
+Captain or Pilot or Stewart\"\"\""""
             s"""import caliban.schema.Annotations._
 
 object Types {
 
   @GQLDescription($role)
   sealed trait Role extends scala.Product with scala.Serializable
+  @GQLDescription($role2)
+  sealed trait Role2 extends scala.Product with scala.Serializable
 
-  object Role {
-    case class Captain(
-      @GQLDescription("ship")
-      shipName: String
-    )                                  extends Role
-    case class Pilot(shipName: String) extends Role
+  object Role2 {
+    final case class Stewart(shipName: String) extends Role2
   }
+
+  final case class Captain(
+    @GQLDescription("ship")
+    shipName: String
+  ) extends Role
+      with Role2
+  final case class Pilot(shipName: String) extends Role with Role2
 
 }
 """
@@ -274,7 +357,7 @@ object Types {
 
 object Types {
 
-  case class Captain(
+  final case class Captain(
     @GQLDescription("foo \\"quotes\\" bar")
     shipName: String
   )
@@ -300,7 +383,7 @@ object Types {
           equalTo(
             """object Operations {
 
-  case class Queries(
+  final case class Queries(
     characters: zio.UIO[Int]
   )
 
@@ -325,8 +408,8 @@ object Types {
           equalTo(
             """object Types {
 
-  case class Character(name: String)
-  case class CharacterArgs(name: String)
+  final case class Character(name: String)
+  final case class CharacterArgs(name: String)
 
 }
 """
@@ -347,14 +430,14 @@ object Types {
           equalTo(
             """object Types {
 
-  case class Character(`private`: String, `object`: String, `type`: String)
+  final case class Character(`private`: String, `object`: String, `type`: String)
 
 }
 """
           )
         )
       },
-      testM("case class reserved field name used") {
+      testM("final case class reserved field name used") {
         val schema =
           """
              type Character {
@@ -366,7 +449,7 @@ object Types {
           equalTo(
             """object Types {
 
-  case class Character(wait$ : String)
+  final case class Character(wait$ : String)
 
 }
 """
@@ -388,10 +471,10 @@ object Types {
         assertM(gen(schema))(
           equalTo(
             """object Types {
-              |  case class HeroCallAlliesArgs(number: Int)
-              |  case class VillainCallAlliesArgs(number: Int, w: String)
-              |  case class Hero(callAllies: HeroCallAlliesArgs => List[Hero])
-              |  case class Villain(callAllies: VillainCallAlliesArgs => List[Villain])
+              |  final case class HeroCallAlliesArgs(number: Int)
+              |  final case class VillainCallAlliesArgs(number: Int, w: String)
+              |  final case class Hero(callAllies: HeroCallAlliesArgs => List[Hero])
+              |  final case class Villain(callAllies: VillainCallAlliesArgs => List[Villain])
               |
               |}
               |""".stripMargin
@@ -426,19 +509,19 @@ object Types {
               |import zio.stream.ZStream
               |
               |object Types {
-              |  case class QueryCharactersArgs(p: Params)
-              |  case class SubscriptionCharactersArgs(p: Params)
-              |  case class Params(p: Int)
+              |  final case class QueryCharactersArgs(p: Params)
+              |  final case class SubscriptionCharactersArgs(p: Params)
+              |  final case class Params(p: Int)
               |
               |}
               |
               |object Operations {
               |
-              |  case class Query(
+              |  final case class Query(
               |    characters: QueryCharactersArgs => zio.UIO[Int]
               |  )
               |
-              |  case class Subscription(
+              |  final case class Subscription(
               |    characters: SubscriptionCharactersArgs => ZStream[Any, Nothing, Int]
               |  )
               |
@@ -478,22 +561,22 @@ object Types {
               |import a.b._
               |
               |object Types {
-              |  case class MutationAddPostArgs(author: Option[String], comment: Option[String])
-              |  case class Post(date: java.time.OffsetDateTime, author: Option[String], comment: Option[String])
+              |  final case class MutationAddPostArgs(author: Option[String], comment: Option[String])
+              |  final case class Post(date: java.time.OffsetDateTime, author: Option[String], comment: Option[String])
               |
               |}
               |
               |object Operations {
               |
-              |  case class Query(
+              |  final case class Query(
               |    posts: zio.UIO[Option[List[Option[Post]]]]
               |  )
               |
-              |  case class Mutation(
+              |  final case class Mutation(
               |    addPost: MutationAddPostArgs => zio.UIO[Option[Post]]
               |  )
               |
-              |  case class Subscription(
+              |  final case class Subscription(
               |    postAdded: ZStream[Any, Nothing, Option[Post]]
               |  )
               |
