@@ -3,7 +3,6 @@ package caliban.schema
 import caliban.CalibanError.ExecutionError
 import caliban.InputValue
 import caliban.Value._
-import caliban.parsing.Parser
 import caliban.schema.Annotations.GQLDefault
 import caliban.schema.Annotations.GQLName
 import magnolia._

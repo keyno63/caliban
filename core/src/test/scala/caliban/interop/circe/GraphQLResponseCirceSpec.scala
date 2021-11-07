@@ -3,10 +3,8 @@ package caliban.interop.circe
 import caliban.CalibanError
 import caliban.CalibanError.ExecutionError
 import caliban.GraphQLResponse
-import caliban.ResponseValue
 import caliban.ResponseValue.ListValue
 import caliban.ResponseValue.ObjectValue
-import caliban.Value.FloatValue
 import caliban.Value.IntValue
 import caliban.Value.StringValue
 import caliban.parsing.adt.LocationInfo

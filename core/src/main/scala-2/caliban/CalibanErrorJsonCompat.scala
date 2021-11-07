@@ -1,7 +1,7 @@
 package caliban
 
 import caliban.interop.play.{ IsPlayJsonReads, IsPlayJsonWrites }
-import caliban.interop.zio.{ IsZIOJsonDecoder, IsZIOJsonEncoder }
+import caliban.interop.zio.IsZIOJsonEncoder
 
 private[caliban] trait CalibanErrorJsonCompat {
   implicit def playJsonWrites[F[_]](implicit ev: IsPlayJsonWrites[F]): F[CalibanError] =

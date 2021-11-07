@@ -11,7 +11,7 @@ import caliban.schema.Annotations._
 import caliban.schema.Schema.scalarSchema
 import caliban.schema.{ Schema, Types }
 import zio.stream.ZStream
-import zio.{ Task, UIO }
+import zio.UIO
 
 object TestUtils {
 

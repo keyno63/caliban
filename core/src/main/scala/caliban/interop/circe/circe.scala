@@ -10,9 +10,6 @@ import caliban.{ CalibanError, GraphQLRequest, GraphQLResponse, InputValue, Resp
 import io.circe._
 import zio.ZIO
 import zio.query.ZQuery
-import io.circe.Json.JString
-import io.circe.Json.JNumber
-import io.circe.Json.JObject
 
 /**
  * This class is an implementation of the pattern described in https://blog.7mind.io/no-more-orphans.html
