@@ -14,7 +14,7 @@ import scala.util.Try
  *
  * @see [[AkkaHttpAdapter]] for usage example.
  */
-final class PlayJsonBackend extends JsonBackend /*with PlayJsonSupport*/ {
+final class PlayJsonBackend extends JsonBackend with PlayJsonSupport {
 
   private def parseJson(s: String): Try[JsValue] =
     Try(Json.parse(s))
