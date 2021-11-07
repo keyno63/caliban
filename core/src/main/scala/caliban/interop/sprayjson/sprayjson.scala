@@ -1,7 +1,7 @@
 package caliban.interop.sprayjson
 
 import caliban.InputValue.{ ListValue, ObjectValue, VariableValue }
-import caliban.ResponseValue.{ sprayJsonInputFormat, StreamValue }
+import caliban.ResponseValue.{ sprayJsonResponseFormat, StreamValue }
 import caliban.Value.FloatValue.{ BigDecimalNumber, DoubleNumber, FloatNumber }
 import caliban.Value.IntValue.{ BigIntNumber, IntNumber, LongNumber }
 import caliban.{ CalibanError, GraphQLRequest, GraphQLResponse, InputValue, ResponseValue, Value }
@@ -24,32 +24,32 @@ object json {
     }
   }
 
+  private[sprayjson] def jsonToResponseValue(json: JsValue): ResponseValue = json match {
+    case JsNull          => NullValue
+    case JsNumber(v)     =>
+      if (v.isWhole()) {
+        if (v.isValidInt) IntNumber(v.toInt)
+        else if (v.isValidLong) LongNumber(v.toLong)
+        else BigIntNumber(v.toBigInt())
+      } else {
+        if (v.isDecimalFloat) FloatNumber(v.toFloat)
+        else if (v.isDecimalDouble) DoubleNumber(v.toDouble)
+        else BigDecimalNumber(v)
+      }
+    case JsString(v)     => StringValue(v)
+    case JsTrue          => BooleanValue(true)
+    case JsFalse         => BooleanValue(false)
+    case JsArray(v)      => ResponseValue.ListValue(v.toList.map(jsonToResponseValue))
+    case JsObject(value) =>
+      ResponseValue.ObjectValue(
+        value.toList.map { case (k, v) => k -> jsonToResponseValue(v) }
+      )
+    case _               => NullValue
+  }
+
   private[caliban] object ValueSprayJson extends DefaultJsonProtocol {
 
     import caliban.InputValue.sprayJsonInputFormat
-
-    private def jsonToResponseValue(json: JsValue): ResponseValue = json match {
-      case JsNull          => NullValue
-      case JsNumber(v)     =>
-        if (v.isWhole()) {
-          if (v.isValidInt) IntNumber(v.toInt)
-          else if (v.isValidLong) LongNumber(v.toLong)
-          else BigIntNumber(v.toBigInt())
-        } else {
-          if (v.isDecimalFloat) FloatNumber(v.toFloat)
-          else if (v.isDecimalDouble) DoubleNumber(v.toDouble)
-          else BigDecimalNumber(v)
-        }
-      case JsString(v)     => StringValue(v)
-      case JsTrue          => BooleanValue(true)
-      case JsFalse         => BooleanValue(false)
-      case JsArray(v)      => ResponseValue.ListValue(v.toList.map(jsonToResponseValue))
-      case JsObject(value) =>
-        ResponseValue.ObjectValue(
-          value.toList.map { case (k, v) => k -> jsonToResponseValue(v) }
-        )
-      case _               => NullValue
-    }
 
     def write(obj: InputValue): JsValue = obj match {
       case NullValue                                   => JsNull
@@ -224,14 +224,56 @@ object json {
   }
 
   private[caliban] implicit object LocationInfoReader extends DefaultJsonProtocol {
-    implicit val formatLocationInfo: RootJsonFormat[LocationInfo] = jsonFormat2(LocationInfo.apply)
+//    implicit val formatLocationInfo: RootJsonFormat[LocationInfo] = jsonFormat2(LocationInfo.apply)
+//    implicit val formatLocationInfo: RootJsonFormat[LocationInfo] = jsonFormat(LocationInfo.apply, "column", "line")
+    def write(li: LocationInfo): JsValue  = li match {
+      case LocationInfo(a, b) => JsObject("column" -> JsNumber(a), "line" -> JsNumber(b))
+    }
+    def read(json: JsValue): LocationInfo = json match {
+      case JsObject(m) =>
+        val ret = for {
+          data   <- m.get("column").map(_.convertTo[Int])
+          errors <- m.get("line").map(_.convertTo[Int])
+        } yield LocationInfo(data, errors)
+        ret.get
+      case v @ _       => throw new Exception(s"failed to parse json value, value =[$v], class ${v.getClass}.")
+    }
   }
+
+  implicit def sprayJsonLocalInfoFormat: RootJsonFormat[LocationInfo] = new RootJsonFormat[LocationInfo] {
+    def write(li: LocationInfo): JsValue  =
+      caliban.interop.sprayjson.json.LocationInfoReader.write(li)
+    def read(json: JsValue): LocationInfo =
+      caliban.interop.sprayjson.json.LocationInfoReader.read(json)
+  }
+
+  private[caliban] object ObjectValueReader extends DefaultJsonProtocol {
+    def write(o: ResponseValue.ObjectValue): JsValue   =
+      JsObject(
+        o.fields.foldLeft(Map.empty[String, JsValue])((p, a) => p ++ Map(a._1 -> a._2.toJson))
+      )
+    def read(json: JsValue): ResponseValue.ObjectValue = json match {
+      case JsObject(fields) =>
+        ResponseValue.ObjectValue(
+          fields.toList.map { case (k, v) => k -> jsonToResponseValue(v) }
+        )
+      case _                => throw new Exception(s"failed to parse json value, value =[$json], ${json.getClass}")
+    }
+  }
+
+  implicit def sprayJsonObjectValueFormat: RootJsonFormat[ResponseValue.ObjectValue] =
+    new RootJsonFormat[ResponseValue.ObjectValue] {
+      override def read(json: JsValue): ResponseValue.ObjectValue =
+        ObjectValueReader.read(json)
+      override def write(obj: ResponseValue.ObjectValue): JsValue =
+        ObjectValueReader.write(obj)
+    }
 
   private[caliban] object ErrorValueSprayJson extends DefaultJsonProtocol {
     private def locationToJson(li: LocationInfo): JsValue =
       JsObject(
         "line"   -> li.line.toJson,
-        "column" -> li.column.toString.toJson
+        "column" -> li.column.toJson
       )
 
     def write(ce: CalibanError): JsValue  = ce match {
@@ -269,13 +311,15 @@ object json {
     }
     def read(json: JsValue): CalibanError = json match {
       case JsObject(m) =>
-        val message   = m.get("message").map(_.convertTo[String])
-        val path      = m.get("path").map(_.convertTo[List[Either[String, Int]]])
-        val locations = m.get("locations").map(_.convertTo[LocationInfo](LocationInfoReader.formatLocationInfo))
+        val message    = m.get("message").map(_.convertTo[String])
+        val path       = m.get("path").map(_.convertTo[List[Either[String, Int]]])
+        val locations  = m.get("locations").map(_.convertTo[List[LocationInfo]]).map(_.head)
+        val extensions = m.get("extensions").map(_.convertTo[ResponseValue.ObjectValue])
         CalibanError.ExecutionError(
           message.get,
           path.getOrElse(Nil),
-          locations
+          locations,
+          extensions = extensions
         )
       case v @ _       => throw new Exception(s"failed to parse json value, value =[$v].")
     }
