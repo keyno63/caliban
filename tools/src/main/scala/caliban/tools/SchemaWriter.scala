@@ -1,6 +1,7 @@
 package caliban.tools
 
 import caliban.parsing.adt.Definition.TypeSystemDefinition.TypeDefinition
+import caliban.parsing.adt.Definition.TypeSystemDefinition.AggregationTypeDefinition
 import caliban.parsing.adt.Definition.TypeSystemDefinition.TypeDefinition._
 import caliban.parsing.adt.Directives.{ LazyDirective, NewtypeDirective }
 import caliban.parsing.adt.Type.{ ListType, NamedType }
@@ -89,10 +90,10 @@ object SchemaWriter {
       s"${safeName(field.name)} :$argsTypeName $effect[$fieldType]"
     }
 
-    def isAbstractEffectful(typedef: ObjectTypeDefinition): Boolean =
+    def isAbstractEffectful(typedef: AggregationTypeDefinition): Boolean =
       isEffectTypeAbstract && isEffectful(typedef)
 
-    def isEffectful(typedef: ObjectTypeDefinition): Boolean =
+    def isEffectful(typedef: AggregationTypeDefinition): Boolean =
       isLocalEffectful(typedef) || isNestedEffectful(typedef)
 
     def isUnionSiblingAbstractEffectful(typedef: ObjectTypeDefinition): Boolean =
@@ -102,19 +103,27 @@ object SchemaWriter {
             union.memberTypes.flatMap(schema.objectTypeDefinition).exists(isAbstractEffectful)
         )
 
-    def isLocalEffectful(typedef: ObjectTypeDefinition): Boolean =
+    def isLocalEffectful(typedef: AggregationTypeDefinition): Boolean =
       hasFieldWithDirective(typedef, LazyDirective)
 
-    def isNestedEffectful(typedef: ObjectTypeDefinition): Boolean =
+    def isNestedEffectful(typedef: AggregationTypeDefinition): Boolean =
       typeNameToNestedFields
         .getOrElse(typedef.name, List.empty)
         .exists(t => hasFieldWithDirective(t, LazyDirective))
 
-    def generic(op: ObjectTypeDefinition, isRootDefinition: Boolean = false): String =
-      if ((isRootDefinition && isEffectTypeAbstract) || isAbstractEffectful(op) || isUnionSiblingAbstractEffectful(op))
-        s"[${effect}[_]]"
-      else
-        s""
+    def generic(tpeDef: AggregationTypeDefinition, isRootDefinition: Boolean = false): String =
+      tpeDef match {
+        case op: ObjectTypeDefinition           =>
+          if (
+            (isRootDefinition && isEffectTypeAbstract) || isAbstractEffectful(op) || isUnionSiblingAbstractEffectful(op)
+          )
+            s"[${effect}[_]]"
+          else
+            ""
+        case interface: InterfaceTypeDefinition =>
+          if (isAbstractEffectful(interface)) s"[${effect}[_]]"
+          else ""
+      }
 
     def writeRootQueryOrMutationDef(op: ObjectTypeDefinition): String =
       s"""
@@ -209,7 +218,9 @@ object SchemaWriter {
       s"""@GQLInterface
         ${writeTypeAnnotations(
           interface
-        )}sealed trait ${interface.name} extends scala.Product with scala.Serializable $derivesEnvSchema {
+        )}sealed trait ${interface.name}${generic(
+          interface
+        )} extends scala.Product with scala.Serializable $derivesEnvSchema {
          ${interface.fields.map(field => writeField(field, interface, isMethod = true)).mkString("\n")}
         }
        """
@@ -449,8 +460,16 @@ object SchemaWriter {
           schemaDef.exists(_.subscription.getOrElse("Subscription") == obj.name)
       )
       .map { obj =>
-        val extendsInterfaces = obj.implements.map(name => name.name)
-        val partOfUnionTypes  = unionTypes.collect {
+        val extendsInterfaces = obj.implements.flatMap { case NamedType(name, _) =>
+          schema
+            .interfaceTypeDefinition(name)
+            .map(interface =>
+              if (isAbstractEffectful(interface)) s"$name[F]"
+              else name
+            )
+        }
+
+        val partOfUnionTypes = unionTypes.collect {
           case (u, members) if members.exists(_.name == obj.name) =>
             if (members.exists(isAbstractEffectful)) s"${u.name}[F]" else u.name
         }
